@@ -159,7 +159,7 @@ class InputLoggerApp(App):
     
     def on_mount(self) -> None:
         self.setup_logger()
-        self.fs = pikpakFs.VirtFs("", "", "", loginCachePath = "token.json")
+        self.fs = pikpakFs.VirtFs(loginCachePath = "token.json", proxy = "http://127.0.0.1:7897")
 
     async def handle_command(self, command) -> None:
         try:
