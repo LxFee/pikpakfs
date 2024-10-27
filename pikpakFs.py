@@ -240,7 +240,7 @@ class PKVirtFs:
         result = await self.client.get_download_url(file.id)
         file.url = result["web_content_link"]
 
-    async def Download(self, url : str, dirNode : DirNode = None) -> None :
+    async def Download(self, url : str, dirNode : DirNode) -> None :
         # 默认创建在当前目录下
         # todo: 完善离线下载task相关
         if dirNode is None:

@@ -7,11 +7,21 @@ import colorlog
 from pikpakFs import VirtFsNode, DirNode, FileNode, PKVirtFs
 import os
 
-def RunSync(func):
-    @wraps(func)
-    def decorated(*args, **kwargs):
-        return asyncio.get_event_loop().run_until_complete(func(*args, **kwargs))
-    return decorated
+def RunSyncInLoop(loop):
+    def decorator(func):
+        @wraps(func)
+        def decorated(*args, **kwargs):
+            currentLoop = None
+            try:
+                currentLoop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            if currentLoop is loop:
+                return loop.run_until_complete(func(*args, **kwargs))
+            else:
+                return asyncio.run_coroutine_threadsafe(func(*args, **kwargs), loop).result()
+        return decorated
+    return decorator
 
 def ProvideDecoratorSelfArgs(decorator, argsProvider):
     def wrapper(func):
@@ -51,7 +61,13 @@ class PikpakConsole(cmd2.Cmd):
         self._SetupLogging()
         self.client = PKVirtFs("token.json", proxy="http://127.0.0.1:7897")
     
-    async def Run(self):     
+    async def Run(self):
+        import signal
+        def signal_handler(sig, frame):
+            pass
+        signal.signal(signal.SIGINT, signal_handler)
+        self.loop = asyncio.get_running_loop()
+
         saved_readline_settings = None
         try:
             # Get sigint protection while we set up readline for cmd2
@@ -84,6 +100,12 @@ class PikpakConsole(cmd2.Cmd):
         logging.getLogger().setLevel(logging.INFO)
         logging.info("Debug mode disabled")
 
+    
+    def LoopProvider(self):
+        return self.loop
+
+    RunSync = ProvideDecoratorSelfArgs(RunSyncInLoop, LoopProvider)
+    
     login_parser = cmd2.Cmd2ArgumentParser()
     login_parser.add_argument("username", help="username", nargs="?")
     login_parser.add_argument("password", help="password", nargs="?")
@@ -98,7 +120,7 @@ class PikpakConsole(cmd2.Cmd):
         await aprint("Logged in successfully")
     
     def PathParserProvider(self):
-        @RunSync
+        @RunSyncInLoop(self.loop)
         async def PathToNode(path):
             path = await self.client.PathToNode(path)
             if path is None:
@@ -184,8 +206,16 @@ class PikpakConsole(cmd2.Cmd):
         """
         os.system('cls' if os.name == 'nt' else 'clear')
 
+    def complete_rm(self, text, line, begidx, endidx):
+        return self.PathCompleter(text, line, begidx, endidx, filterFiles = False)
 
-if __name__ == "__main__":
+    @RunSync
+    @WithPathParser
+    async def do_rm(self, args):
+        await self.client.Delete(args.path)
+
+
+if __name__ == "__main__":  
     nest_asyncio.apply()
     prog = PikpakConsole()
     asyncio.run(prog.Run())
