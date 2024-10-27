@@ -11,10 +11,9 @@ import logging
 class PathWalker():
     def __init__(self, pathStr : str, sep : str = "/"):
         self.__pathSpots : list[str] = []
-        pathStr = pathStr.strip()
         if not pathStr.startswith(sep):
             self.__pathSpots.append(".")
-        pathSpots = [spot.strip() for spot in pathStr.split(sep) if spot.strip() != ""]
+        pathSpots = pathStr.split(sep)
         self.__pathSpots.extend(pathSpots)
     
     def IsAbsolute(self) -> bool:
@@ -91,7 +90,7 @@ class PKVirtFs:
             httpx_client_args=httpx_client_args)
 
     def __TryLoginFromCache(self):
-        if self.loginCachePath == None:
+        if self.loginCachePath is None:
             return
         if not os.path.exists(self.loginCachePath):
             return
@@ -102,7 +101,7 @@ class PKVirtFs:
             logging.info("successfully load login info from cache") 
     
     def __DumpLoginInfo(self):
-        if self.loginCachePath == None:
+        if self.loginCachePath is None:
             return
         with open(self.loginCachePath, 'w', encoding='utf-8') as file:
             token = PikpakToken(self.client.username, self.client.password, self.client.access_token, self.client.refresh_token, self.client.user_id)
@@ -131,7 +130,7 @@ class PKVirtFs:
         return None
 
     def GetFatherNode(self, node : VirtFsNode) -> VirtFsNode:
-        if node.fatherId == None:
+        if node.fatherId is None:
             return self.root
         return self.nodes[node.fatherId]
 
@@ -166,11 +165,13 @@ class PKVirtFs:
 
     async def PathToNode(self, pathStr : str) -> VirtFsNode:
         father, sonName = await self.PathToFatherNodeAndNodeName(pathStr)
+        if sonName == "":
+            return father
         fatherDir = self.ToDir(father)
-        if fatherDir == None:
+        if fatherDir is None:
             return None
         return self.FindChildInDirByName(father, sonName)
-    
+      
     async def PathToFatherNodeAndNodeName(self, pathStr : str) -> tuple[VirtFsNode, str]:
         pathWalker = PathWalker(pathStr)
         father : VirtFsNode = None
@@ -178,7 +179,7 @@ class PKVirtFs:
         current = self.root if pathWalker.IsAbsolute() else self.currentLocation
         
         for spot in pathWalker.Walk():
-            if current == None:
+            if current is None:
                 father = None
                 break
             if spot == "..":
@@ -186,10 +187,10 @@ class PKVirtFs:
                 continue
             father = current
             currentDir = self.ToDir(current)
-            if currentDir == None:
+            if currentDir is None:
                 current = None
                 continue
-            if currentDir.lastUpdate == None:
+            if currentDir.lastUpdate is None:
                 await self.RefreshDirectory(currentDir)
             if spot == ".":
                 continue
@@ -198,19 +199,21 @@ class PKVirtFs:
             
         if current != None:
             currentDir = self.ToDir(current)
-            if currentDir != None and currentDir.lastUpdate == None:
+            if currentDir != None and currentDir.lastUpdate is None:
                 await self.RefreshDirectory(currentDir)
             father = self.GetFatherNode(current)
             sonName = current.name
         
         return father, sonName
 
-    async def NodeToPath(self, node : VirtFsNode) -> str:
-        spots : list[str] = [""]
+    def NodeToPath(self, node : VirtFsNode) -> str:
+        if node is self.root:
+            return "/"
+        spots : list[str] = []
         current = node
         while current.id != None:
             spots.append(current.name)
-            if current.fatherId == None:
+            if current.fatherId is None:
                 break
             current = self.nodes[current.fatherId]
         spots.append("")
@@ -222,18 +225,12 @@ class PKVirtFs:
         return self.ToDir(self.FindChildInDirByName(node, name))
 
     async def Login(self, username : str = None, password : str = None) -> None:
-        if self.client != None and username == None and password == None:
+        if self.client != None and username is None and password is None:
             username = self.client.username
             password = self.client.password
 
-        if self.client != None and self.client.username == username and self.client.password == password:
-            logging.info("Already login, try refresh token")
-            try:
-                await self.client.refresh_access_token()
-                self.__DumpLoginInfo()
-                return
-            except Exception:
-                logging.info("Refresh access token failed! Try relogin")
+        if username == None and password == None:
+            raise Exception("Username and password are required")
         
         self.__InitClientByUsernamePassword(username, password)
         await self.client.login()
@@ -246,14 +243,14 @@ class PKVirtFs:
     async def Download(self, url : str, dirNode : DirNode = None) -> None :
         # 默认创建在当前目录下
         # todo: 完善离线下载task相关
-        if dirNode == None:
+        if dirNode is None:
             dirNode = self.currentLocation
         await self.client.offline_download(url, dirNode.id)
 
     async def Delete(self, node : VirtFsNode) -> None:
         father = self.GetFatherNode(node)
         fatherDir = self.ToDir(father)
-        if fatherDir == None:
+        if fatherDir is None:
             raise Exception('Failed to locate')
         if self.currentLocation is node or self.__IsAncestorsOf(node, self.currentLocation):
             raise Exception('Delete self or ancestor is not allowed')
