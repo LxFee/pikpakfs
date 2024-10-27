@@ -33,7 +33,12 @@ def ProvideDecoratorSelfArgs(decorator, argsProvider):
     
     return wrapper
 
-class PikpakConsole(cmd2.Cmd): 
+class PikpakConsole(cmd2.Cmd):
+    def LoopProvider(self):
+        return self.loop
+
+    RunSync = ProvideDecoratorSelfArgs(RunSyncInLoop, LoopProvider)
+    
     def _SetupLogging(self):
         formatter = colorlog.ColoredFormatter(
             "%(log_color)s%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -99,12 +104,6 @@ class PikpakConsole(cmd2.Cmd):
         """
         logging.getLogger().setLevel(logging.INFO)
         logging.info("Debug mode disabled")
-
-    
-    def LoopProvider(self):
-        return self.loop
-
-    RunSync = ProvideDecoratorSelfArgs(RunSyncInLoop, LoopProvider)
     
     login_parser = cmd2.Cmd2ArgumentParser()
     login_parser.add_argument("username", help="username", nargs="?")
@@ -119,21 +118,17 @@ class PikpakConsole(cmd2.Cmd):
         await self.client.Login(args.username, args.password)
         await aprint("Logged in successfully")
     
-    def PathParserProvider(self):
-        @RunSyncInLoop(self.loop)
-        async def PathToNode(path):
-            path = await self.client.PathToNode(path)
-            if path is None:
-                raise ValueError("Invalid path")
-            return path
+    def ParserProvider(self):
+        return cmd2.Cmd2ArgumentParser()
 
-        path_parser = cmd2.Cmd2ArgumentParser()
-        path_parser.add_argument("path", help="path", default="", nargs="?", type=PathToNode)
-        return path_parser
+    def AddPathParser(parserProvider):
+        def PathParserProvider(self):
+            parser = parserProvider(self)
+            parser.add_argument("path", help="path", default="", nargs="?", type=RunSyncInLoop(self.loop)(self.client.PathToNode))
+            return parser
+        return PathParserProvider
+    
 
-    WithPathParser = ProvideDecoratorSelfArgs(cmd2.with_argparser, PathParserProvider)
-
-    @RunSync
     async def PathCompleter(self, text, line, begidx, endidx, filterFiles):   
         father, sonName = await self.client.PathToFatherNodeAndNodeName(text)
         fatherDir = self.client.ToDir(father)
@@ -161,11 +156,12 @@ class PikpakConsole(cmd2.Cmd):
 
         return matches
 
-    def complete_ls(self, text, line, begidx, endidx):
-        return self.PathCompleter(text, line, begidx, endidx, filterFiles = False)
+    @RunSync
+    async def complete_ls(self, text, line, begidx, endidx):
+        return await self.PathCompleter(text, line, begidx, endidx, filterFiles = False)
 
     @RunSync
-    @WithPathParser
+    @ProvideDecoratorSelfArgs(cmd2.with_argparser, AddPathParser(ParserProvider))
     async def do_ls(self, args):
         """
         List files in a directory
@@ -175,15 +171,17 @@ class PikpakConsole(cmd2.Cmd):
                 node = self.client.nodes[childId]
                 await aprint(node.name)
         elif isinstance(args.path, FileNode):
-            await aprint(args.path.name)
+            await self.client.UpdateDownloadUrl(args.path)
+            await aprint(f"{args.path.name}: {args.path.url}")
         else:
             await aprint("Invalid path")
     
-    def complete_cd(self, text, line, begidx, endidx):
-        return self.PathCompleter(text, line, begidx, endidx, filterFiles = True)
+    @RunSync
+    async def complete_cd(self, text, line, begidx, endidx):
+        return await self.PathCompleter(text, line, begidx, endidx, filterFiles = True)
 
     @RunSync
-    @WithPathParser
+    @ProvideDecoratorSelfArgs(cmd2.with_argparser, AddPathParser(ParserProvider))
     async def do_cd(self, args):
         """
         Change directory
@@ -206,13 +204,64 @@ class PikpakConsole(cmd2.Cmd):
         """
         os.system('cls' if os.name == 'nt' else 'clear')
 
-    def complete_rm(self, text, line, begidx, endidx):
-        return self.PathCompleter(text, line, begidx, endidx, filterFiles = False)
+    @RunSync
+    async def complete_rm(self, text, line, begidx, endidx):
+        return await self.PathCompleter(text, line, begidx, endidx, filterFiles = False)
 
     @RunSync
-    @WithPathParser
+    @ProvideDecoratorSelfArgs(cmd2.with_argparser, AddPathParser(ParserProvider))
     async def do_rm(self, args):
+        """
+        Remove a file or directory
+        """
         await self.client.Delete(args.path)
+
+    @RunSync
+    async def complete_mkdir(self, text, line, begidx, endidx):
+        return await self.PathCompleter(text, line, begidx, endidx, filterFiles = True)
+
+    def AddFatherAndSonParser(parserProvider):
+        def PathParserProvider(self):
+            parser = parserProvider(self)
+            parser.add_argument("path", help="path", default="", nargs="?", type=RunSyncInLoop(self.loop)(self.client.PathToFatherNodeAndNodeName))
+            return parser
+        return PathParserProvider
+
+    @RunSync
+    @ProvideDecoratorSelfArgs(cmd2.with_argparser, AddFatherAndSonParser(ParserProvider))
+    async def do_mkdir(self, args):
+        """
+        Create a directory
+        """
+        father, sonName = args.path
+        fatherDir = self.client.ToDir(father)
+        if fatherDir == None or sonName == "" or sonName == None:
+            await aprint("Invalid path")
+            return
+        childNode = self.client.FindChildInDirByName(fatherDir, sonName)
+        if childNode is not None:
+            await aprint("Path already exists")
+            return
+        for i in range(1, 10):
+            await self.client.MakeDir(fatherDir, sonName + str(i))
+    
+    def AddUrlParser(parserProvider):
+        def PathParserProvider(self):
+            parser = parserProvider(self)
+            parser.add_argument("url", help="url")
+            return parser
+        return PathParserProvider
+
+    @RunSync
+    @ProvideDecoratorSelfArgs(cmd2.with_argparser, AddPathParser(AddUrlParser(ParserProvider)))
+    async def do_download(self, args):
+        """
+        Download a file
+        """
+        if self.client.ToDir(args.path) is None:
+            await aprint("Invalid directory")
+            return
+        await self.client.Download(args.url, args.path)
 
 
 if __name__ == "__main__":  

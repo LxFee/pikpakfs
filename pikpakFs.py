@@ -81,7 +81,7 @@ class PKVirtFs:
         if self.proxyConfig != None:
             httpx_client_args = {
                 "proxy": self.proxyConfig,
-                "transport": httpx.AsyncHTTPTransport(retries=1),
+                "transport": httpx.AsyncHTTPTransport()
             }
 
         self.client = PikPakApi(
@@ -144,8 +144,15 @@ class PKVirtFs:
         return None
 
     async def RefreshDirectory(self, dirNode : DirNode):
-        dirInfo = await self.client.file_list(parent_id = dirNode.id)
-        nodes = dirInfo["files"]
+        next_page_token = None
+        nodes = []
+        while True:
+            dirInfo = await self.client.file_list(parent_id = dirNode.id, next_page_token=next_page_token, size=3)
+            next_page_token = dirInfo["next_page_token"]
+            currentPageNodes = dirInfo["files"]
+            nodes.extend(currentPageNodes)
+            if next_page_token is None or next_page_token == "":
+                break
         dirNode.childrenId.clear()
 
         for node in nodes:
