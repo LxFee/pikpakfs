@@ -81,11 +81,10 @@ class PikpakConsole(cmd2.Cmd):
         return await asyncio.wrap_future(future)
 
     async def aoutput(self, output):
-        return ""
-        # async def PrintOuput(output):
-        #     print(output)
-        # future = asyncio.run_coroutine_threadsafe(PrintOuput(output), self.ioLoop)
-        # await asyncio.wrap_future(future)
+        async def PrintOuput(output):
+            print(output)
+        future = asyncio.run_coroutine_threadsafe(PrintOuput(output), self.ioLoop)
+        await asyncio.wrap_future(future)
 
     async def Run(self):
         # 1. 设置忽略SIGINT
