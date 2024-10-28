@@ -81,10 +81,11 @@ class PikpakConsole(cmd2.Cmd):
         return await asyncio.wrap_future(future)
 
     async def aoutput(self, output):
-        async def PrintOuput(output):
-            print(output)
-        future = asyncio.run_coroutine_threadsafe(PrintOuput(output), self.ioLoop)
-        await asyncio.wrap_future(future)
+        return ""
+        # async def PrintOuput(output):
+        #     print(output)
+        # future = asyncio.run_coroutine_threadsafe(PrintOuput(output), self.ioLoop)
+        # await asyncio.wrap_future(future)
 
     async def Run(self):
         # 1. 设置忽略SIGINT
@@ -117,7 +118,8 @@ class PikpakConsole(cmd2.Cmd):
             with self.sigint_protection:
                 if saved_readline_settings is not None:
                     self._restore_readline(saved_readline_settings)
-            self.ioLoop.stop()
+            # https://stackoverflow.com/questions/51642267/asyncio-how-do-you-use-run-forever
+            self.ioLoop.call_soon_threadsafe(self.ioLoop.stop)
             thread.join()
     
     def do_debug(self, args):
