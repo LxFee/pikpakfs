@@ -42,6 +42,12 @@ class FileNode(VirtFsNode):
         super().__init__(id, name, fatherId)
         self.url : str = None
 
+def IsDir(node : VirtFsNode) -> bool:
+        return isinstance(node, DirNode)
+    
+def IsFile(node : VirtFsNode) -> bool:
+    return isinstance(node, FileNode)
+
 class PikpakToken:
     def __init__(self, username, password, access_token, refresh_token, user_id):
         self.username = username
@@ -67,16 +73,16 @@ class PKVirtFs:
         self.loginCachePath = loginCachePath
         self.proxyConfig = proxy
         self.client : PikPakApi = None
-        self.__TryLoginFromCache()
+        self._try_login_from_cache()
 
-    def __InitClientByToken(self, token : PikpakToken):
-        self.__InitClientByUsernamePassword(token.username, token.password)
+    def _init_client_by_token(self, token : PikpakToken):
+        self._init_client_by_username_and_password(token.username, token.password)
         self.client.access_token = token.access_token
         self.client.refresh_token = token.refresh_token
         self.client.user_id = token.user_id
         self.client.encode_token()
 
-    def __InitClientByUsernamePassword(self, username : str, password : str):
+    def _init_client_by_username_and_password(self, username : str, password : str):
         httpx_client_args = None
         if self.proxyConfig != None:
             httpx_client_args = {
@@ -89,7 +95,7 @@ class PKVirtFs:
             password = password,
             httpx_client_args=httpx_client_args)
 
-    def __TryLoginFromCache(self):
+    def _try_login_from_cache(self):
         if self.loginCachePath is None:
             return
         if not os.path.exists(self.loginCachePath):
@@ -97,10 +103,10 @@ class PKVirtFs:
         with open(self.loginCachePath, 'r', encoding='utf-8') as file:
             content = file.read()
             token = PikpakToken.from_json(content)
-            self.__InitClientByToken(token)
+            self._init_client_by_token(token)
             logging.info("successfully load login info from cache") 
     
-    def __DumpLoginInfo(self):
+    def _dump_login_info(self):
         if self.loginCachePath is None:
             return
         with open(self.loginCachePath, 'w', encoding='utf-8') as file:
@@ -108,31 +114,26 @@ class PKVirtFs:
             file.write(token.to_json())
             logging.info("successfully dump login info to cache")
     
-    def __IsAncestorsOf(self, nodeA : VirtFsNode, nodeB : VirtFsNode) -> bool:
+    def _is_ancestors_of(self, nodeA : VirtFsNode, nodeB : VirtFsNode) -> bool:
         if nodeB is nodeA:
             return False
         if nodeA is self.root:
             return True
-        while nodeB.fatherId != None:
+        while nodeB.fatherId != self.root.id:
             nodeB = self.nodes[nodeB.fatherId]
             if nodeB is nodeA:
                 return True
         return False
 
-    def ToDir(self, node : VirtFsNode) -> DirNode:
-        if isinstance(node, DirNode):
-            return node
-        return None
-    
-    def ToFile(self, node : VirtFsNode) -> FileNode:
-        if isinstance(node, FileNode):
-            return node
-        return None
+    def GetNodeById(self, id : str) -> VirtFsNode:
+        if id == self.root.id:
+            return self.root
+        return self.nodes[id]
 
     def GetFatherNode(self, node : VirtFsNode) -> VirtFsNode:
-        if node is self.root or node.fatherId == self.root.id:
+        if node is self.root:
             return self.root
-        return self.nodes[node.fatherId]
+        return self.GetNodeById(node.fatherId)
 
     def FindChildInDirByName(self, dir : DirNode, name : str):
         if dir is self.root and name == "":
@@ -143,39 +144,46 @@ class PKVirtFs:
                 return node
         return None
 
-    async def RefreshDirectory(self, dirNode : DirNode):
-        next_page_token = None
-        nodes = []
-        while True:
-            dirInfo = await self.client.file_list(parent_id = dirNode.id, next_page_token=next_page_token)
-            next_page_token = dirInfo["next_page_token"]
-            currentPageNodes = dirInfo["files"]
-            nodes.extend(currentPageNodes)
-            if next_page_token is None or next_page_token == "":
-                break
-        dirNode.childrenId.clear()
+    async def Refresh(self, node : VirtFsNode):
+        if node.lastUpdate != None:
+            return
 
-        for node in nodes:
-            child : VirtFsNode = None
-            id = node["id"]
-            name = node["name"]
-            fatherId = dirNode.id
-            if id in self.nodes:
-                child = self.nodes[id]
-            else:
-                child = DirNode(id, name, fatherId) if node["kind"].endswith("folder") else FileNode(id, name, fatherId)
-                self.nodes[id] = child
-            child.name = name
-            child.fatherId = fatherId
-            dirNode.childrenId.append(id)
-        dirNode.lastUpdate = datetime.now()
+        if IsDir(node):
+            next_page_token = None
+            childrenInfo = []
+            while True:
+                dirInfo = await self.client.file_list(parent_id = node.id, next_page_token=next_page_token)
+                next_page_token = dirInfo["next_page_token"]
+                currentPageNodes = dirInfo["files"]
+                childrenInfo.extend(currentPageNodes)
+                if next_page_token is None or next_page_token == "":
+                    break
+            node.childrenId.clear()
+
+            for childInfo in childrenInfo:
+                child : VirtFsNode = None
+                id = childInfo["id"]
+                name = childInfo["name"]
+                fatherId = node.id
+                if id in self.nodes:
+                    child = self.nodes[id]
+                else:
+                    child = DirNode(id, name, fatherId) if childInfo["kind"].endswith("folder") else FileNode(id, name, fatherId)
+                    self.nodes[id] = child
+                child.name = name
+                child.fatherId = fatherId
+                node.childrenId.append(id)
+        elif IsFile(node):
+            result = await self.client.get_download_url(node.id)
+            node.url = result["web_content_link"]
+        
+        node.lastUpdate = datetime.now()
 
     async def PathToNode(self, pathStr : str) -> VirtFsNode:
         father, sonName = await self.PathToFatherNodeAndNodeName(pathStr)
         if sonName == "":
             return father
-        fatherDir = self.ToDir(father)
-        if fatherDir is None:
+        if not IsDir(father):
             return None
         return self.FindChildInDirByName(father, sonName)
       
@@ -193,21 +201,18 @@ class PKVirtFs:
                 current = self.GetFatherNode(current)
                 continue
             father = current
-            currentDir = self.ToDir(current)
-            if currentDir is None:
+            if not IsDir(current):
                 current = None
                 continue
-            if currentDir.lastUpdate is None:
-                await self.RefreshDirectory(currentDir)
+            await self.Refresh(current)
             if spot == ".":
                 continue
             sonName = spot
-            current = self.FindChildInDirByName(currentDir, spot)
+            current = self.FindChildInDirByName(current, spot)
             
         if current != None:
-            currentDir = self.ToDir(current)
-            if currentDir != None and currentDir.lastUpdate is None:
-                await self.RefreshDirectory(currentDir)
+            if IsDir(current):
+                await self.Refresh(current)
             father = self.GetFatherNode(current)
             sonName = current.name
         
@@ -218,19 +223,13 @@ class PKVirtFs:
             return "/"
         spots : list[str] = []
         current = node
-        while current.id != None:
+        while current is not self.root:
             spots.append(current.name)
-            if current.fatherId is None:
-                break
-            current = self.nodes[current.fatherId]
+            current = self.GetFatherNode(current)
         spots.append("")
         return "/".join(reversed(spots))
 
-    async def MakeDir(self, node : DirNode, name : str) -> DirNode:
-        await self.client.create_folder(name, node.id)
-        await self.RefreshDirectory(node)
-        return self.ToDir(self.FindChildInDirByName(node, name))
-
+    # commands #
     async def Login(self, username : str = None, password : str = None) -> None:
         if self.client != None and username is None and password is None:
             username = self.client.username
@@ -239,28 +238,26 @@ class PKVirtFs:
         if username == None and password == None:
             raise Exception("Username and password are required")
         
-        self.__InitClientByUsernamePassword(username, password)
+        self._init_client_by_username_and_password(username, password)
         await self.client.login()
-        self.__DumpLoginInfo()
-    
-    async def UpdateDownloadUrl(self, file : FileNode) -> None:
-        result = await self.client.get_download_url(file.id)
-        file.url = result["web_content_link"]
+        self._dump_login_info()
+
+    async def MakeDir(self, node : DirNode, name : str) -> DirNode:
+        await self.client.create_folder(name, node.id)
+        await self.Refresh(node)
+        return self.FindChildInDirByName(node, name)
 
     async def Download(self, url : str, dirNode : DirNode) -> None :
         # 默认创建在当前目录下
         # todo: 完善离线下载task相关
-        if dirNode is None:
-            dirNode = self.currentLocation
         await self.client.offline_download(url, dirNode.id)
 
     async def Delete(self, node : VirtFsNode) -> None:
         father = self.GetFatherNode(node)
-        fatherDir = self.ToDir(father)
-        if fatherDir is None:
+        if not IsDir(father):
             raise Exception('Failed to locate')
-        if self.currentLocation is node or self.__IsAncestorsOf(node, self.currentLocation):
+        if self.currentLocation is node or self._is_ancestors_of(node, self.currentLocation):
             raise Exception('Delete self or ancestor is not allowed')
         
         await self.client.delete_to_trash([node.id])
-        await self.RefreshDirectory(fatherDir)
+        await self.Refresh(father)
