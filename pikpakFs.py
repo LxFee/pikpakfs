@@ -147,7 +147,7 @@ class PKVirtFs:
         next_page_token = None
         nodes = []
         while True:
-            dirInfo = await self.client.file_list(parent_id = dirNode.id, next_page_token=next_page_token, size=3)
+            dirInfo = await self.client.file_list(parent_id = dirNode.id, next_page_token=next_page_token)
             next_page_token = dirInfo["next_page_token"]
             currentPageNodes = dirInfo["files"]
             nodes.extend(currentPageNodes)

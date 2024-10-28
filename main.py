@@ -1,8 +1,8 @@
 import asyncio, nest_asyncio
 import cmd2
 from functools import wraps
-from aioconsole import ainput, aprint
 import logging
+import threading
 import colorlog
 from pikpakFs import VirtFsNode, DirNode, FileNode, PKVirtFs
 import os
@@ -66,13 +66,40 @@ class PikpakConsole(cmd2.Cmd):
         self._SetupLogging()
         self.client = PKVirtFs("token.json", proxy="http://127.0.0.1:7897")
     
+    def IOWorker(self, loop):
+        self.terminal_lock.acquire() # 我看cmdloop是这么做的，所以我也这么做
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_forever()
+        finally:
+            self.terminal_lock.release()
+
+    async def ainput(self, prompt):
+        async def ReadInput(prompt):
+            return self._read_command_line(prompt)
+        future = asyncio.run_coroutine_threadsafe(ReadInput(prompt), self.ioLoop)
+        return await asyncio.wrap_future(future)
+
+    async def aoutput(self, output):
+        async def PrintOuput(output):
+            print(output)
+        future = asyncio.run_coroutine_threadsafe(PrintOuput(output), self.ioLoop)
+        await asyncio.wrap_future(future)
+
     async def Run(self):
+        # 1. 设置忽略SIGINT
         import signal
         def signal_handler(sig, frame):
             pass
         signal.signal(signal.SIGINT, signal_handler)
-        self.loop = asyncio.get_running_loop()
 
+        # 2. 创建一个新的事件循环
+        self.loop = asyncio.get_running_loop()
+        self.ioLoop = asyncio.new_event_loop()
+        thread = threading.Thread(target=self.IOWorker, args=(self.ioLoop,))
+        thread.start()
+
+        # 3. 启动cmd2
         saved_readline_settings = None
         try:
             # Get sigint protection while we set up readline for cmd2
@@ -82,7 +109,7 @@ class PikpakConsole(cmd2.Cmd):
             stop = False
             while not stop:
                 # Get sigint protection while we read the command line
-                line = await asyncio.to_thread(self._read_command_line, self.prompt)
+                line = await self.ainput(self.prompt)
                 # Run the command along with all associated pre and post hooks
                 stop = self.onecmd_plus_hooks(line)
         finally:
@@ -90,6 +117,8 @@ class PikpakConsole(cmd2.Cmd):
             with self.sigint_protection:
                 if saved_readline_settings is not None:
                     self._restore_readline(saved_readline_settings)
+            self.ioLoop.stop()
+            thread.join()
     
     def do_debug(self, args):
         """
@@ -116,7 +145,7 @@ class PikpakConsole(cmd2.Cmd):
         Login to pikpak
         """
         await self.client.Login(args.username, args.password)
-        await aprint("Logged in successfully")
+        await self.aoutput("Logged in successfully")
     
     def ParserProvider(self):
         return cmd2.Cmd2ArgumentParser()
@@ -169,12 +198,12 @@ class PikpakConsole(cmd2.Cmd):
         if isinstance(args.path, DirNode):
             for childId in args.path.childrenId:
                 node = self.client.nodes[childId]
-                await aprint(node.name)
+                await self.aoutput(node.name)
         elif isinstance(args.path, FileNode):
             await self.client.UpdateDownloadUrl(args.path)
-            await aprint(f"{args.path.name}: {args.path.url}")
+            await self.aoutput(f"{args.path.name}: {args.path.url}")
         else:
-            await aprint("Invalid path")
+            await self.aoutput("Invalid path")
     
     @RunSync
     async def complete_cd(self, text, line, begidx, endidx):
@@ -187,7 +216,7 @@ class PikpakConsole(cmd2.Cmd):
         Change directory
         """
         if self.client.ToDir(args.path) is None:
-            await aprint("Invalid directory")
+            await self.aoutput("Invalid directory")
             return
         self.client.currentLocation = args.path
     
@@ -196,7 +225,7 @@ class PikpakConsole(cmd2.Cmd):
         """
         Print current working directory
         """
-        await aprint(self.client.NodeToPath(self.client.currentLocation))
+        await self.aoutput(self.client.NodeToPath(self.client.currentLocation))
 
     def do_clear(self, args):
         """
@@ -236,11 +265,11 @@ class PikpakConsole(cmd2.Cmd):
         father, sonName = args.path
         fatherDir = self.client.ToDir(father)
         if fatherDir == None or sonName == "" or sonName == None:
-            await aprint("Invalid path")
+            await self.aoutput("Invalid path")
             return
         childNode = self.client.FindChildInDirByName(fatherDir, sonName)
         if childNode is not None:
-            await aprint("Path already exists")
+            await self.aoutput("Path already exists")
             return
         for i in range(1, 10):
             await self.client.MakeDir(fatherDir, sonName + str(i))
@@ -259,7 +288,7 @@ class PikpakConsole(cmd2.Cmd):
         Download a file
         """
         if self.client.ToDir(args.path) is None:
-            await aprint("Invalid directory")
+            await self.aoutput("Invalid directory")
             return
         await self.client.Download(args.url, args.path)
 
