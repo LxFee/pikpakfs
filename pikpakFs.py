@@ -59,9 +59,9 @@ class PikpakToken:
         return cls(**data)
 
 class PKVirtFs:
-    def __init__(self, loginCachePath : str = None, proxy : str = None):
+    def __init__(self, loginCachePath : str = None, proxy : str = None, rootId = None):
         self.nodes : Dict[str, VirtFsNode] = {} 
-        self.root = DirNode(None, "", None)
+        self.root = DirNode(rootId, "", None)
         self.currentLocation = self.root
 
         self.loginCachePath = loginCachePath
@@ -130,7 +130,7 @@ class PKVirtFs:
         return None
 
     def GetFatherNode(self, node : VirtFsNode) -> VirtFsNode:
-        if node.fatherId is None:
+        if node is self.root or node.fatherId == self.root.id:
             return self.root
         return self.nodes[node.fatherId]
 
