@@ -147,7 +147,6 @@ class PKVirtFs:
     async def Refresh(self, node : VirtFsNode):
         if node.lastUpdate != None:
             return
-
         if IsDir(node):
             next_page_token = None
             childrenInfo = []
@@ -211,8 +210,6 @@ class PKVirtFs:
             current = self.FindChildInDirByName(current, spot)
             
         if current != None:
-            if IsDir(current):
-                await self.Refresh(current)
             father = self.GetFatherNode(current)
             sonName = current.name
         
@@ -242,22 +239,26 @@ class PKVirtFs:
         await self.client.login()
         self._dump_login_info()
 
+    def log_json(self, json_obj):
+        logging.debug(json.dumps(json_obj, indent=4))
+
     async def MakeDir(self, node : DirNode, name : str) -> DirNode:
-        await self.client.create_folder(name, node.id)
-        await self.Refresh(node)
-        return self.FindChildInDirByName(node, name)
+        result = await self.client.create_folder(name, node.id)
+        id = result["file"]["id"]
+        name = result["file"]["name"]
+        newDir = DirNode(id, name, node.id)
+        self.nodes[id] = newDir
+        node.childrenId.append(id)
+        return newDir
 
     async def Download(self, url : str, dirNode : DirNode) -> None :
         # 默认创建在当前目录下
         # todo: 完善离线下载task相关
-        await self.client.offline_download(url, dirNode.id)
+        self.log_json(await self.client.offline_download(url, dirNode.id))
 
-    async def Delete(self, node : VirtFsNode) -> None:
-        father = self.GetFatherNode(node)
-        if not IsDir(father):
-            raise Exception('Failed to locate')
-        if self.currentLocation is node or self._is_ancestors_of(node, self.currentLocation):
-            raise Exception('Delete self or ancestor is not allowed')
-        
-        await self.client.delete_to_trash([node.id])
-        await self.Refresh(father)
+    async def Delete(self, nodes : list[VirtFsNode]) -> None:
+        nodeIds = [node.id for node in nodes]
+        await self.client.delete_to_trash(nodeIds)
+        for node in nodes:
+            father = self.GetFatherNode(node)
+            father.childrenId.remove(node.id)

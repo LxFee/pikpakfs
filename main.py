@@ -53,9 +53,16 @@ class PikpakConsole(cmd2.Cmd):
         )
         handler = logging.StreamHandler()
         handler.setFormatter(formatter)
+        handler.setLevel(logging.INFO)
+
+        file_handler = logging.FileHandler('app.log')
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.DEBUG)
+        
         logger = logging.getLogger()
         logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        logger.addHandler(file_handler)
+        logger.setLevel(logging.DEBUG)
 
     def IOWorker(self, loop):
         self.terminal_lock.acquire() # 我看cmdloop是这么做的，所以我也这么做
@@ -80,10 +87,10 @@ class PikpakConsole(cmd2.Cmd):
     def ParserProvider(self):
         return cmd2.Cmd2ArgumentParser()
 
-    def AddPathParser(parserProvider):
+    def AddPathParser(parserProvider, nargs = "?"):
         def PathParserProvider(self):
             parser = parserProvider(self)
-            parser.add_argument("path", help="path", default="", nargs="?", type=RunSyncInLoop(self.loop)(self.client.PathToNode))
+            parser.add_argument("path", help="path", default="", nargs=nargs, type=RunSyncInLoop(self.loop)(self.client.PathToNode))
             return parser
         return PathParserProvider
     
@@ -208,15 +215,16 @@ class PikpakConsole(cmd2.Cmd):
         List files in a directory
         """
         node = args.path
+        if node is None:
+            await self.aoutput("Invalid path")
+            return
+        await self.client.Refresh(node)
         if IsDir(node):
             for childId in node.childrenId:
                 child = self.client.GetNodeById(childId)
                 await self.aoutput(child.name)
         elif IsFile(node):
-            await self.client.Refresh(node)
-            await self.aoutput(f"{node.name}: {node.url}")
-        else:
-            await self.aoutput("Invalid path")
+            await self.aoutput(f"{node.name}: {node.url}")            
     
     @RunSync
     async def complete_cd(self, text, line, begidx, endidx):
@@ -252,7 +260,7 @@ class PikpakConsole(cmd2.Cmd):
         return await self.PathCompleter(text, line, begidx, endidx, filterFiles = False)
 
     @RunSync
-    @ProvideDecoratorSelfArgs(cmd2.with_argparser, AddPathParser(ParserProvider))
+    @ProvideDecoratorSelfArgs(cmd2.with_argparser, AddPathParser(ParserProvider, "+"))
     async def do_rm(self, args):
         """
         Remove a file or directory
