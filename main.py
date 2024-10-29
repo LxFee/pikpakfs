@@ -4,7 +4,7 @@ from functools import wraps
 import logging
 import threading
 import colorlog
-from pikpakFs import VirtFsNode, DirNode, FileNode, PKVirtFs, IsDir, IsFile
+from pikpakFs import FsNode, DirNode, FileNode, PKFs, IsDir, IsFile
 import os
 
 def RunSyncInLoop(loop):
@@ -142,7 +142,7 @@ class PikpakConsole(cmd2.Cmd):
     def __init__(self):
         super().__init__()
         self._setup_logging()
-        self.client = PKVirtFs("token.json", proxy="http://127.0.0.1:7897")
+        self.client = PKFs("token.json", proxy="http://127.0.0.1:7890")
 
     async def Run(self):
         # 1. 设置忽略SIGINT

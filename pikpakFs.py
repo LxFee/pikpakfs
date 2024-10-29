@@ -7,6 +7,27 @@ import json
 import re
 import os
 import logging
+from enum import Enum
+
+
+class PKTaskStatus(Enum):
+    pending = "pending"
+    offline_downloading = "offline_downloading"
+    downloading = "downloading"
+    done = "done"
+    error = "error"
+
+class PkTask:
+    id = 0
+    def __init__(self, torrent : str, toDirId : str, status : PKTaskStatus = PKTaskStatus.pending):
+        id += 1
+        self.taskId = id
+        self.status = status
+        
+        self.toDirId = toDirId
+        self.torrent = torrent
+        self.url = None
+        self.pkTaskId = None
 
 class PathWalker():
     def __init__(self, pathStr : str, sep : str = "/"):
@@ -25,30 +46,30 @@ class PathWalker():
     def Walk(self) -> list[str]:
         return self.__pathSpots
 
-class VirtFsNode:
+class FsNode:
     def __init__(self, id : str, name : str, fatherId : str):
         self.id = id
         self.name = name
         self.fatherId = fatherId
         self.lastUpdate : datetime = None
 
-class DirNode(VirtFsNode):
+class DirNode(FsNode):
     def __init__(self, id : str, name : str, fatherId : str):
         super().__init__(id, name, fatherId)
         self.childrenId : list[str] = []
         
-class FileNode(VirtFsNode):
+class FileNode(FsNode):
     def __init__(self, id : str, name : str, fatherId : str):
         super().__init__(id, name, fatherId)
         self.url : str = None
 
-def IsDir(node : VirtFsNode) -> bool:
+def IsDir(node : FsNode) -> bool:
         return isinstance(node, DirNode)
     
-def IsFile(node : VirtFsNode) -> bool:
+def IsFile(node : FsNode) -> bool:
     return isinstance(node, FileNode)
 
-class PikpakToken:
+class PkToken:
     def __init__(self, username, password, access_token, refresh_token, user_id):
         self.username = username
         self.password = password
@@ -64,18 +85,22 @@ class PikpakToken:
         data = json.loads(json_str)
         return cls(**data)
 
-class PKVirtFs:
+class PKFs:
+    async def RunTasks(self):
+        pass
+
     def __init__(self, loginCachePath : str = None, proxy : str = None, rootId = None):
-        self.nodes : Dict[str, VirtFsNode] = {} 
+        self.nodes : Dict[str, FsNode] = {} 
         self.root = DirNode(rootId, "", None)
         self.currentLocation = self.root
 
+        self.tasks : list[PkTask] = []
         self.loginCachePath = loginCachePath
         self.proxyConfig = proxy
         self.client : PikPakApi = None
         self._try_login_from_cache()
 
-    def _init_client_by_token(self, token : PikpakToken):
+    def _init_client_by_token(self, token : PkToken):
         self._init_client_by_username_and_password(token.username, token.password)
         self.client.access_token = token.access_token
         self.client.refresh_token = token.refresh_token
@@ -102,7 +127,7 @@ class PKVirtFs:
             return
         with open(self.loginCachePath, 'r', encoding='utf-8') as file:
             content = file.read()
-            token = PikpakToken.from_json(content)
+            token = PkToken.from_json(content)
             self._init_client_by_token(token)
             logging.info("successfully load login info from cache") 
     
@@ -110,11 +135,11 @@ class PKVirtFs:
         if self.loginCachePath is None:
             return
         with open(self.loginCachePath, 'w', encoding='utf-8') as file:
-            token = PikpakToken(self.client.username, self.client.password, self.client.access_token, self.client.refresh_token, self.client.user_id)
+            token = PkToken(self.client.username, self.client.password, self.client.access_token, self.client.refresh_token, self.client.user_id)
             file.write(token.to_json())
             logging.info("successfully dump login info to cache")
     
-    def _is_ancestors_of(self, nodeA : VirtFsNode, nodeB : VirtFsNode) -> bool:
+    def _is_ancestors_of(self, nodeA : FsNode, nodeB : FsNode) -> bool:
         if nodeB is nodeA:
             return False
         if nodeA is self.root:
@@ -125,12 +150,12 @@ class PKVirtFs:
                 return True
         return False
 
-    def GetNodeById(self, id : str) -> VirtFsNode:
+    def GetNodeById(self, id : str) -> FsNode:
         if id == self.root.id:
             return self.root
         return self.nodes[id]
 
-    def GetFatherNode(self, node : VirtFsNode) -> VirtFsNode:
+    def GetFatherNode(self, node : FsNode) -> FsNode:
         if node is self.root:
             return self.root
         return self.GetNodeById(node.fatherId)
@@ -144,7 +169,7 @@ class PKVirtFs:
                 return node
         return None
 
-    async def Refresh(self, node : VirtFsNode):
+    async def Refresh(self, node : FsNode):
         if node.lastUpdate != None:
             return
         if IsDir(node):
@@ -160,7 +185,7 @@ class PKVirtFs:
             node.childrenId.clear()
 
             for childInfo in childrenInfo:
-                child : VirtFsNode = None
+                child : FsNode = None
                 id = childInfo["id"]
                 name = childInfo["name"]
                 fatherId = node.id
@@ -178,7 +203,7 @@ class PKVirtFs:
         
         node.lastUpdate = datetime.now()
 
-    async def PathToNode(self, pathStr : str) -> VirtFsNode:
+    async def PathToNode(self, pathStr : str) -> FsNode:
         father, sonName = await self.PathToFatherNodeAndNodeName(pathStr)
         if sonName == "":
             return father
@@ -186,9 +211,9 @@ class PKVirtFs:
             return None
         return self.FindChildInDirByName(father, sonName)
       
-    async def PathToFatherNodeAndNodeName(self, pathStr : str) -> tuple[VirtFsNode, str]:
+    async def PathToFatherNodeAndNodeName(self, pathStr : str) -> tuple[FsNode, str]:
         pathWalker = PathWalker(pathStr)
-        father : VirtFsNode = None
+        father : FsNode = None
         sonName : str = None
         current = self.root if pathWalker.IsAbsolute() else self.currentLocation
         
@@ -215,7 +240,7 @@ class PKVirtFs:
         
         return father, sonName
 
-    def NodeToPath(self, node : VirtFsNode) -> str:
+    def NodeToPath(self, node : FsNode) -> str:
         if node is self.root:
             return "/"
         spots : list[str] = []
@@ -239,9 +264,6 @@ class PKVirtFs:
         await self.client.login()
         self._dump_login_info()
 
-    def log_json(self, json_obj):
-        logging.debug(json.dumps(json_obj, indent=4))
-
     async def MakeDir(self, node : DirNode, name : str) -> DirNode:
         result = await self.client.create_folder(name, node.id)
         id = result["file"]["id"]
@@ -251,12 +273,12 @@ class PKVirtFs:
         node.childrenId.append(id)
         return newDir
 
-    async def Download(self, url : str, dirNode : DirNode) -> None :
-        # 默认创建在当前目录下
-        # todo: 完善离线下载task相关
-        self.log_json(await self.client.offline_download(url, dirNode.id))
+    async def Download(self, url : str, dirNode : DirNode) -> PkTask :
+        task = PkTask(url, dirNode.id)
+        self.tasks.append(task)
+        return task
 
-    async def Delete(self, nodes : list[VirtFsNode]) -> None:
+    async def Delete(self, nodes : list[FsNode]) -> None:
         nodeIds = [node.id for node in nodes]
         await self.client.delete_to_trash(nodeIds)
         for node in nodes:
