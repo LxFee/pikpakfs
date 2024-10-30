@@ -4,7 +4,7 @@ from functools import wraps
 import logging
 import threading
 import colorlog
-from pikpakFs import PKFs, IsDir, IsFile
+from pikpakFs import PKFs, IsDir, IsFile, PKTaskStatus
 import os
 
 def setup_logging():
@@ -122,8 +122,8 @@ class Console(cmd2.Cmd):
         logging.info("Debug mode disabled")
 
     login_parser = cmd2.Cmd2ArgumentParser()
-    login_parser.add_argument("username", help="username")
-    login_parser.add_argument("password", help="password")
+    login_parser.add_argument("username", help="username", nargs="?")
+    login_parser.add_argument("password", help="password", nargs="?")
     @RunSync
     @cmd2.with_argparser(login_parser)
     async def do_login(self, args):
@@ -260,12 +260,20 @@ class Console(cmd2.Cmd):
         if not IsDir(node):
             await self.AsyncPrint("Invalid directory")
             return
-        await Client.Download(args.url, node)
-    
-    async def ani(self):
-        while True:
-            await asyncio.sleep(1)
-            await self.AsyncPrint("ani")
+        task = await Client.Download(args.url, node)
+        await self.AsyncPrint(f"Task {task.id} created")
+
+    query_parser = cmd2.Cmd2ArgumentParser()
+    query_parser.add_argument("-f", "--filter", help="filter", nargs="?", choices=[member.value for member in PKTaskStatus])
+    @RunSync
+    @cmd2.with_argparser(query_parser)
+    async def do_query(self, args):
+        """
+        Query All Tasks
+        """
+        tasks = await Client.QueryTasks(PKTaskStatus(args.filter) if args.filter is not None else None)
+        for task in tasks:
+            await self.AsyncPrint(f"{task.id}: {task.status.name}")
 
 async def mainLoop():
     global MainLoop, Client

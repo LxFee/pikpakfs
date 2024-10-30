@@ -19,8 +19,8 @@ class PKTaskStatus(Enum):
 class PkTask:
     id = 0
     def __init__(self, torrent : str, toDirId : str, status : PKTaskStatus = PKTaskStatus.pending):
-        id += 1
-        self.taskId = id
+        PkTask.id += 1
+        self.taskId = PkTask.id
         self.status = status
         
         self.runningTask : asyncio.Task = None
@@ -86,8 +86,24 @@ class PkToken:
         return cls(**data)
 
 class PKFs:
+    async def _task_pending(self, task : PkTask):
+        pkTask = await self.client.offline_download(task.torrent, task.toDirId)
+        task.pkTaskId = pkTask["task"]["id"]
+        task.status = PKTaskStatus.offline_downloading
+
+    async def _task_offline_downloading(self, task : PkTask):
+        waitTime = 1
+        await asyncio.sleep(waitTime)
+        # status = await self.client.get_task_status(task.pkTaskId)
+
     async def _task_worker(self, task : PkTask):
-        pass
+        while task.status != PKTaskStatus.done and task.status != PKTaskStatus.error:
+            if task.status == PKTaskStatus.pending:
+                await self._task_pending(task)
+            if task.status == PKTaskStatus.offline_downloading:
+                await self._task_offline_downloading(task)
+            break
+                    
 
     def RunTask(self, task : PkTask):
         self.tasks.append(task)
