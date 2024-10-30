@@ -36,7 +36,7 @@ def setup_logging():
 
 setup_logging()
 MainLoop : asyncio.AbstractEventLoop = None
-Client = PKFs("token.json", proxy="http://127.0.0.1:7890")
+Client = PKFs("token.json", proxy="http://127.0.0.1:7897")
 
 def RunSync(func):
     @wraps(func)
@@ -108,19 +108,26 @@ class Console(cmd2.Cmd):
         self.outputThread.join()
     
     # commands #
-    def do_debug(self, args):
+    def do_logging_off(self, args):
+        """
+        Disable logging
+        """
+        logging.getLogger().setLevel(logging.CRITICAL)
+        logging.critical("Logging disabled")
+    
+    def do_logging_debug(self, args):
         """
         Enable debug mode
         """
         logging.getLogger().setLevel(logging.DEBUG)
         logging.debug("Debug mode enabled")
 
-    def do_debugoff(self, args):
+    def do_logging_info(self, args):
         """
-        Disable debug mode
+        Enable info mode
         """
         logging.getLogger().setLevel(logging.INFO)
-        logging.info("Debug mode disabled")
+        logging.info("Info mode enabled")
 
     login_parser = cmd2.Cmd2ArgumentParser()
     login_parser.add_argument("username", help="username", nargs="?")
@@ -273,15 +280,21 @@ class Console(cmd2.Cmd):
         Query All Tasks
         """
         tasks = await Client.QueryTasks(PKTaskStatus(args.filter) if args.filter is not None else None)
+        # 格式化输出所有task信息id，status，lastStatus的信息，输出表格
+        await self.AsyncPrint("id\tstatus\tlastStatus")
         for task in tasks:
-            await self.AsyncPrint(f"{task.id}: {task.status.name}")
+            await self.AsyncPrint(f"{task.id}\t{task.status.value}\t{task.recoverStatus.value}")
 
-    def print_debug(self, jsonObject):
-        logging.debug(json.dumps(jsonObject, indent=4))
+    retry_parser = cmd2.Cmd2ArgumentParser()
+    retry_parser.add_argument("taskId", help="taskId", type=int)
 
     @RunSync
-    async def do_test(self, args):
-        self.print_debug(await Client.client.offline_list())
+    @cmd2.with_argparser(retry_parser)
+    async def do_retry(self, args):
+        """
+        Retry a task
+        """
+        await Client.RetryTask(args.taskId)
 
 async def mainLoop():
     global MainLoop, Client

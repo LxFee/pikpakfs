@@ -99,6 +99,60 @@ Todo:
 
 3. offline_list
 ```json
+
+{
+    "tasks": [
+        {
+            "kind": "drive#task",
+            "id": "VOASrVEVIQmaCBjEu8Y1VDb7o1",
+            "name": "[LoliHouse] Mahoutsukai ni Narenakatta Onnanoko no Hanashi - 04 [WebRip 1080p HEVC-10bit AAC SRTx2].mkv",
+            "type": "offline",
+            "user_id": "ZEBRT8Wc1IzU1rfZ",
+            "statuses": [],
+            "status_size": 1,
+            "params": {
+                "age": "0",
+                "mime_type": "video/x-matroska",
+                "predict_speed": "73300775185",
+                "predict_type": "3",
+                "url": "magnet:?xt=urn:btih:02816d3bd51f9e3ac72c986cc65f3f7a2b201b5b"
+            },
+            "file_id": "VOASrVFTIQmaCBjEu8Y1VDbAo1",
+            "file_name": "[LoliHouse] Mahoutsukai ni Narenakatta Onnanoko no Hanashi - 04 [WebRip 1080p HEVC-10bit AAC SRTx2].mkv",
+            "file_size": "726857457",
+            "message": "Saving",
+            "created_time": "2024-10-30T22:39:27.712+08:00",
+            "updated_time": "2024-10-30T22:39:27.712+08:00",
+            "third_task_id": "",
+            "phase": "PHASE_TYPE_RUNNING",
+            "progress": 90,
+            "icon_link": "https://static.mypikpak.com/39998a187e280e2ee9ceb5f58315a1bcc744fa64",
+            "callback": "",
+            "reference_resource": {
+                "@type": "type.googleapis.com/drive.ReferenceFile",
+                "kind": "drive#file",
+                "id": "VOASrVFTIQmaCBjEu8Y1VDbAo1",
+                "parent_id": "VNTQEPvYTRlbqP1pB2YGZorwo1",
+                "name": "[LoliHouse] Mahoutsukai ni Narenakatta Onnanoko no Hanashi - 04 [WebRip 1080p HEVC-10bit AAC SRTx2].mkv",
+                "size": "726857457",
+                "mime_type": "video/x-matroska",
+                "icon_link": "https://static.mypikpak.com/39998a187e280e2ee9ceb5f58315a1bcc744fa64",
+                "hash": "",
+                "phase": "PHASE_TYPE_RUNNING",
+                "thumbnail_link": "",
+                "params": {},
+                "space": "",
+                "medias": [],
+                "starred": false,
+                "tags": []
+            },
+            "space": ""
+        }
+    ],
+    "next_page_token": "",
+    "expires_in": 3
+}
+
 {
     "tasks": [],
     "next_page_token": "",

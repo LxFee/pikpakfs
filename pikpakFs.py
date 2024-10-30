@@ -1,5 +1,5 @@
 import httpx
-from pikpakapi import PikPakApi
+from pikpakapi import PikPakApi, DownloadStatus
 from typing import Dict
 from datetime import datetime
 import json
@@ -10,21 +10,25 @@ import asyncio
 
 
 class PKTaskStatus(Enum):
-    pending = "pending"
-    offline_downloading = "offline_downloading"
+    pending_offline_download = "pending"
+    offline_downloading = "remote_downloading"
+    pending_download = "pending_for_download"
     downloading = "downloading"
     done = "done"
     error = "error"
 
 class PkTask:
     id = 0
-    def __init__(self, torrent : str, toDirId : str, status : PKTaskStatus = PKTaskStatus.pending):
+    def __init__(self, torrent : str, toDirId : str, status : PKTaskStatus = PKTaskStatus.pending_offline_download):
         PkTask.id += 1
         self.taskId = PkTask.id
         self.status = status
+        self.recoverStatus = status
         
+        self.name : str = ""
         self.runningTask : asyncio.Task = None
         self.toDirId = toDirId
+        self.nodeId : str = None
         self.torrent = torrent
         self.url = None
         self.pkTaskId = None
@@ -86,24 +90,70 @@ class PkToken:
         return cls(**data)
 
 class PKFs:
+    async def RetryTask(self, taskId : int):
+        task = self.tasks[taskId]
+        if task == None or task.status != PKTaskStatus.error:
+            return
+        task.status = task.recoverStatus
+        self.RunTask(task)
+
     async def _task_pending(self, task : PkTask):
         pkTask = await self.client.offline_download(task.torrent, task.toDirId)
         task.pkTaskId = pkTask["task"]["id"]
+        task.nodeId = pkTask["task"]["file_id"]
+        task.name = pkTask["task"]["name"]
         task.status = PKTaskStatus.offline_downloading
 
     async def _task_offline_downloading(self, task : PkTask):
-        waitTime = 1
-        await asyncio.sleep(waitTime)
-        # status = await self.client.get_task_status(task.pkTaskId)
+        waitTime = 3
+        while True:
+            await asyncio.sleep(waitTime)
+            status = await self.client.get_task_status(task.pkTaskId, task.nodeId)
+            if status == DownloadStatus.not_found or status == DownloadStatus.not_found or status == DownloadStatus.error:
+                task.recoverStatus = PKTaskStatus.pending_offline_download
+                task.status = PKTaskStatus.error
+                break
+            elif status == DownloadStatus.done:
+                fileInfo = await self.client.offline_file_info(file_id=task.nodeId)
+                if self.GetNodeById(task.nodeId) is not None:
+                    oldFather = self.GetFatherNode(task.nodeId)
+                    if oldFather is not None:
+                        oldFather.childrenId.remove(task.nodeId)
+                
+                task.toDirId = fileInfo["parent_id"]
+                task.name = fileInfo["name"]
+                type = fileInfo["kind"]
+                if type.endswith("folder"):
+                    self.nodes[task.nodeId] = DirNode(task.nodeId, task.name, task.toDirId)    
+                else:
+                    self.nodes[task.nodeId] = FileNode(task.nodeId, task.name, task.toDirId)
+                father = self.GetNodeById(task.toDirId)
+                if father.id is not None:
+                    father.childrenId.append(task.nodeId)
+                task.status = PKTaskStatus.pending_download
+                break
+            waitTime = waitTime * 1.5
 
     async def _task_worker(self, task : PkTask):
         while task.status != PKTaskStatus.done and task.status != PKTaskStatus.error:
-            if task.status == PKTaskStatus.pending:
-                await self._task_pending(task)
-            if task.status == PKTaskStatus.offline_downloading:
-                await self._task_offline_downloading(task)
-            break
-                    
+            try:
+                if task.status == PKTaskStatus.pending_offline_download:
+                    await self._task_pending(task) 
+                    continue
+
+                if task.status == PKTaskStatus.offline_downloading:
+                    await self._task_offline_downloading(task)
+                    continue
+
+                if task.status == PKTaskStatus.pending_download:
+                    task.status = PKTaskStatus.done
+                    pass
+
+                break
+            except Exception as e:
+                logging.error(f"task failed, exception occured: {e}")
+                task.recoverStatus = task.status                  
+                task.status = PKTaskStatus.error
 
     def RunTask(self, task : PkTask):
         self.tasks.append(task)
@@ -174,6 +224,8 @@ class PKFs:
     def GetNodeById(self, id : str) -> FsNode:
         if id == self.root.id:
             return self.root
+        if id not in self.nodes:
+            return None
         return self.nodes[id]
 
     def GetFatherNode(self, node : FsNode) -> FsNode:
@@ -191,9 +243,9 @@ class PKFs:
         return None
 
     async def Refresh(self, node : FsNode):
-        if node.lastUpdate != None:
-            return
         if IsDir(node):
+            if node.lastUpdate != None:
+                return
             next_page_token = None
             childrenInfo = []
             while True:
