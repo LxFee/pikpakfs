@@ -66,10 +66,10 @@ class Console(cmd2.Cmd):
         future = asyncio.run_coroutine_threadsafe(_input(prompt), self.ioLoop)
         return await asyncio.wrap_future(future)
 
-    async def AsyncPrint(self, output):
-        async def _print(output):
-            print(output)
-        future = asyncio.run_coroutine_threadsafe(_print(output), self.ioLoop)
+    async def AsyncPrint(self, *args, **kwargs):
+        async def _print(*args, **kwargs):
+            print(*args, **kwargs)
+        future = asyncio.run_coroutine_threadsafe(_print(*args, **kwargs), self.ioLoop)
         await asyncio.wrap_future(future)
 
     def __init__(self):
@@ -90,7 +90,7 @@ class Console(cmd2.Cmd):
         # 3. 设置console
         self.saved_readline_settings = None
         with self.sigint_protection:
-            saved_readline_settings = self._set_up_cmd2_readline()
+            self.saved_readline_settings = self._set_up_cmd2_readline()
     
     def postloop(self):
         # 1. 还原console设置
