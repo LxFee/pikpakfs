@@ -53,23 +53,19 @@ def RunSync(func):
 
 class Console(cmd2.Cmd):
     def _io_worker(self, loop):
-        self.terminal_lock.acquire()
         asyncio.set_event_loop(loop)
-        try:
-            loop.run_forever()
-        finally:
-            self.terminal_lock.release()
+        loop.run_forever()
 
     async def AsyncInput(self, prompt):
         async def _input(prompt):
             return self._read_command_line(prompt)
-        future = asyncio.run_coroutine_threadsafe(_input(prompt), self.ioLoop)
+        future = asyncio.run_coroutine_threadsafe(_input(prompt), self.inputLoop)
         return await asyncio.wrap_future(future)
 
     async def AsyncPrint(self, *args, **kwargs):
         async def _print(*args, **kwargs):
             print(*args, **kwargs)
-        future = asyncio.run_coroutine_threadsafe(_print(*args, **kwargs), self.ioLoop)
+        future = asyncio.run_coroutine_threadsafe(_print(*args, **kwargs), self.outputLoop)
         await asyncio.wrap_future(future)
 
     def __init__(self):
@@ -83,9 +79,13 @@ class Console(cmd2.Cmd):
         signal.signal(signal.SIGINT, signal_handler)
 
         # 2. 创建IO线程处理输入输出
-        self.ioLoop = asyncio.new_event_loop()
-        self.ioThread = threading.Thread(target=self._io_worker, args=(self.ioLoop,))
-        self.ioThread.start()
+        self.inputLoop = asyncio.new_event_loop()
+        self.inputThread = threading.Thread(target=self._io_worker, args=(self.inputLoop,))
+        self.inputThread.start()
+
+        self.outputLoop = asyncio.new_event_loop()
+        self.outputThread = threading.Thread(target=self._io_worker, args=(self.outputLoop,))
+        self.outputThread.start()
 
         # 3. 设置console
         self.saved_readline_settings = None
@@ -100,8 +100,11 @@ class Console(cmd2.Cmd):
         
         # 2. 停止IO线程
         # https://stackoverflow.com/questions/51642267/asyncio-how-do-you-use-run-forever
-        self.ioLoop.call_soon_threadsafe(self.ioLoop.stop)
-        self.ioThread.join()
+        self.inputLoop.call_soon_threadsafe(self.inputLoop.stop)
+        self.inputThread.join()
+
+        self.outputLoop.call_soon_threadsafe(self.outputLoop.stop)
+        self.outputThread.join()
     
     # commands #
     def do_debug(self, args):
@@ -259,6 +262,11 @@ class Console(cmd2.Cmd):
             return
         await Client.Download(args.url, node)
     
+    async def ani(self):
+        while True:
+            await asyncio.sleep(1)
+            await self.AsyncPrint("ani")
+
 async def mainLoop():
     global MainLoop, Client
     MainLoop = asyncio.get_running_loop()
