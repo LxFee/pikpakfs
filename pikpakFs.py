@@ -1,13 +1,12 @@
 import httpx
-from hashlib import md5
 from pikpakapi import PikPakApi
 from typing import Dict
 from datetime import datetime
 import json
-import re
 import os
 import logging
 from enum import Enum
+import asyncio
 
 
 class PKTaskStatus(Enum):
@@ -24,6 +23,7 @@ class PkTask:
         self.taskId = id
         self.status = status
         
+        self.runningTask : asyncio.Task = None
         self.toDirId = toDirId
         self.torrent = torrent
         self.url = None
@@ -86,8 +86,13 @@ class PkToken:
         return cls(**data)
 
 class PKFs:
-    async def RunTasks(self):
+    async def _task_worker(self, task : PkTask):
         pass
+
+    def RunTask(self, task : PkTask):
+        self.tasks.append(task)
+        if task.runningTask is None or task.runningTask.done():
+            task.runningTask = asyncio.create_task(self._task_worker(task))
 
     def __init__(self, loginCachePath : str = None, proxy : str = None, rootId = None):
         self.nodes : Dict[str, FsNode] = {} 
@@ -275,8 +280,13 @@ class PKFs:
 
     async def Download(self, url : str, dirNode : DirNode) -> PkTask :
         task = PkTask(url, dirNode.id)
-        self.tasks.append(task)
+        self.RunTask(task)
         return task
+
+    async def QueryTasks(self, filterByStatus : PKTaskStatus = None) -> list[PkTask]:
+        if filterByStatus is None:
+            return self.tasks
+        return [task for task in self.tasks if task.status == filterByStatus]
 
     async def Delete(self, nodes : list[FsNode]) -> None:
         nodeIds = [node.id for node in nodes]
