@@ -6,6 +6,7 @@ import threading
 import colorlog
 from pikpakFs import PKFs, IsDir, IsFile, PKTaskStatus
 import os
+import json
 
 def setup_logging():
     formatter = colorlog.ColoredFormatter(
@@ -274,6 +275,13 @@ class Console(cmd2.Cmd):
         tasks = await Client.QueryTasks(PKTaskStatus(args.filter) if args.filter is not None else None)
         for task in tasks:
             await self.AsyncPrint(f"{task.id}: {task.status.name}")
+
+    def print_debug(self, jsonObject):
+        logging.debug(json.dumps(jsonObject, indent=4))
+
+    @RunSync
+    async def do_test(self, args):
+        self.print_debug(await Client.client.offline_list())
 
 async def mainLoop():
     global MainLoop, Client
