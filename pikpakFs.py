@@ -8,6 +8,12 @@ import logging
 from enum import Enum
 import asyncio
 
+class DownloadTaskStatus(Enum):
+    pending = "pending"
+    downloading = "downloading"
+    done = "done"
+    error = "error"
+    stopped = "stopped"
 
 class PKTaskStatus(Enum):
     pending_offline_download = "pending"
@@ -16,6 +22,7 @@ class PKTaskStatus(Enum):
     downloading = "downloading"
     done = "done"
     error = "error"
+    stopped = "stopped"
 
 class PkTask:
     id = 0
@@ -32,6 +39,13 @@ class PkTask:
         self.torrent = torrent
         self.url = None
         self.pkTaskId = None
+
+class DownloadTask:
+    def __init__(self, nodeId : str, pkTaskId : str, status : DownloadTaskStatus = DownloadTaskStatus.pending):
+        self.status = status
+        self.recoverStatus = status
+        self.pkTaskId = pkTaskId
+        self.nodeId = nodeId
 
 class PathWalker():
     def __init__(self, pathStr : str, sep : str = "/"):
@@ -135,25 +149,22 @@ class PKFs:
             waitTime = waitTime * 1.5
 
     async def _task_worker(self, task : PkTask):
-        while task.status != PKTaskStatus.done and task.status != PKTaskStatus.error:
+        while task.status not in {PKTaskStatus.done, PKTaskStatus.error, PKTaskStatus.stopped}:
             try:
                 if task.status == PKTaskStatus.pending_offline_download:
-                    await self._task_pending(task) 
-                    continue
-
-                if task.status == PKTaskStatus.offline_downloading:
+                    await self._task_pending(task)
+                elif task.status == PKTaskStatus.offline_downloading:
                     await self._task_offline_downloading(task)
-                    continue
-
-                if task.status == PKTaskStatus.pending_download:
+                elif task.status == PKTaskStatus.pending_download:
                     task.status = PKTaskStatus.done
-                    pass
-
-                break
+                else:
+                    break
             except Exception as e:
-                logging.error(f"task failed, exception occured: {e}")
-                task.recoverStatus = task.status                  
+                logging.error(f"task failed, exception occurred: {e}")
+                task.recoverStatus = task.status
                 task.status = PKTaskStatus.error
+
+    
 
     def RunTask(self, task : PkTask):
         self.tasks.append(task)
