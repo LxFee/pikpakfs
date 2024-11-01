@@ -299,7 +299,8 @@ class Console(cmd2.Cmd):
 async def mainLoop():
     global MainLoop, Client
     MainLoop = asyncio.get_running_loop()
-    
+    Client.Start()
+
     console = Console()
     console.preloop()
     try:
