@@ -6,7 +6,7 @@ import threading
 import colorlog
 from PikPakFs import PikPakFs, IsDir, IsFile, TaskStatus
 import os
-import keyboard
+from tabulate import tabulate
 
 LogFormatter = colorlog.ColoredFormatter(
         "%(log_color)s%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -34,19 +34,32 @@ setup_logging()
 MainLoop : asyncio.AbstractEventLoop = None
 Client = PikPakFs("token.json", proxy="http://127.0.0.1:7897")
 
-def RunSync(func):
-    @wraps(func)
-    def decorator(*args, **kwargs):
+class RunSync:
+    _current_task : asyncio.Task = None
+
+    def StopCurrentRunningCoroutine():
+        if RunSync._current_task is not None:
+            RunSync._current_task.cancel()
+
+    def __init__(self, func):
+        wraps(func)(self)
+
+    def __call__(self, *args, **kwargs):
         currentLoop = None
         try:
             currentLoop = asyncio.get_running_loop()
         except RuntimeError:
+            logging.error("Not in an event loop")
             pass
+        func = self.__wrapped__
         if currentLoop is MainLoop:
-            return MainLoop.run_until_complete(func(*args, **kwargs))
+            task = asyncio.Task(func(*args, **kwargs))
+            RunSync._current_task = task
+            result = MainLoop.run_until_complete(task)
+            RunSync._current_task = None
+            return result
         else:
             return asyncio.run_coroutine_threadsafe(func(*args, **kwargs), MainLoop).result()
-    return decorator
 
 class Console(cmd2.Cmd):
     def _io_worker(self, loop):
@@ -76,7 +89,7 @@ class Console(cmd2.Cmd):
         # 1. 设置忽略SIGINT
         import signal
         def signal_handler(sig, frame):
-            pass
+            RunSync.StopCurrentRunningCoroutine()
         signal.signal(signal.SIGINT, signal_handler)
 
         # 2. 创建IO线程处理输入输出
@@ -125,8 +138,8 @@ class Console(cmd2.Cmd):
     login_parser = cmd2.Cmd2ArgumentParser()
     login_parser.add_argument("username", help="username", nargs="?")
     login_parser.add_argument("password", help="password", nargs="?")
-    @RunSync
     @cmd2.with_argparser(login_parser)
+    @RunSync
     async def do_login(self, args):
         """
         Login to pikpak
@@ -134,7 +147,7 @@ class Console(cmd2.Cmd):
         await Client.Login(args.username, args.password)
         await self.Print("Logged in successfully")
 
-    async def _path_completer(self, text, line, begidx, endidx, filterfiles):   
+    async def _path_completer(self, text, line, begidx, endidx, ignoreFiles):   
         father, sonName = await Client.PathToFatherNodeAndNodeName(text)
         if not IsDir(father):
             return []
@@ -142,7 +155,7 @@ class Console(cmd2.Cmd):
         matchesNode = []
         for childId in father.childrenId:
             child = Client.GetNodeById(childId)
-            if filterfiles and IsFile(child):
+            if ignoreFiles and IsFile(child):
                 continue
             if child.name.startswith(sonName):
                 self.display_matches.append(child.name)
@@ -163,8 +176,8 @@ class Console(cmd2.Cmd):
 
     ls_parser = cmd2.Cmd2ArgumentParser()
     ls_parser.add_argument("path", help="path", default="", nargs="?", type=RunSync(Client.PathToNode))
-    @RunSync
     @cmd2.with_argparser(ls_parser)
+    @RunSync
     async def do_ls(self, args):
         """
         List files in a directory
@@ -187,8 +200,8 @@ class Console(cmd2.Cmd):
 
     cd_parser = cmd2.Cmd2ArgumentParser()
     cd_parser.add_argument("path", help="path", default="", nargs="?", type=RunSync(Client.PathToNode))
-    @RunSync
     @cmd2.with_argparser(cd_parser)
+    @RunSync
     async def do_cd(self, args):
         """
         Change directory
@@ -218,8 +231,8 @@ class Console(cmd2.Cmd):
 
     rm_parser = cmd2.Cmd2ArgumentParser()
     rm_parser.add_argument("paths", help="paths", default="", nargs="+", type=RunSync(Client.PathToNode))
-    @RunSync
     @cmd2.with_argparser(rm_parser)
+    @RunSync
     async def do_rm(self, args):
         """
         Remove a file or directory
@@ -232,8 +245,8 @@ class Console(cmd2.Cmd):
 
     mkdir_parser = cmd2.Cmd2ArgumentParser()
     mkdir_parser.add_argument("path_and_son", help="path and son", default="", nargs="?", type=RunSync(Client.PathToFatherNodeAndNodeName))
-    @RunSync
     @cmd2.with_argparser(mkdir_parser)
+    @RunSync
     async def do_mkdir(self, args):
         """
         Create a directory
@@ -251,11 +264,11 @@ class Console(cmd2.Cmd):
     download_parser = cmd2.Cmd2ArgumentParser()
     download_parser.add_argument("url", help="url")
     download_parser.add_argument("path", help="path", default="", nargs="?", type=RunSync(Client.PathToNode))
-    @RunSync
     @cmd2.with_argparser(download_parser)
+    @RunSync
     async def do_download(self, args):
         """
-        Download a file
+        Download a file or directory
         """
         node = args.path
         if not IsDir(node):
@@ -264,24 +277,47 @@ class Console(cmd2.Cmd):
         task = await Client.Download(args.url, node)
         await self.Print(f"Task {task.id} created")
 
-    query_parser = cmd2.Cmd2ArgumentParser()
-    query_parser.add_argument("-f", "--filter", help="filter", nargs="?", choices=[member.value for member in TaskStatus])
     @RunSync
+    async def complete_pull(self, text, line, begidx, endidx):
+        return await self._path_completer(text, line, begidx, endidx, False)
+
+    pull_parser = cmd2.Cmd2ArgumentParser()
+    pull_parser.add_argument("target", help="pull target", type=RunSync(Client.PathToNode))
+    @cmd2.with_argparser(pull_parser)
+    @RunSync
+    async def do_pull(self, args):
+        """
+        Pull a file or directory
+        """
+        await Client.Pull(args.target)
+        
+
+    query_parser = cmd2.Cmd2ArgumentParser()
+    query_parser.add_argument("-t", "--type", help="type", nargs="?", choices=["pikpak", "filedownload"], default="pikpak")
+    query_parser.add_argument("-f", "--filter", help="filter", nargs="?", choices=[member.value for member in TaskStatus])
     @cmd2.with_argparser(query_parser)
+    @RunSync
     async def do_query(self, args):
         """
         Query All Tasks
         """
-        tasks = await Client.QueryPikPakTasks(TaskStatus(args.filter) if args.filter is not None else None)
-        # 格式化输出所有task信息id，status，lastStatus的信息，输出表格
-        await self.Print("tstatus\tdetails\tid")
-        for task in tasks:
-            await self.Print(f"{task._status.value}\t{task.status.value}\t{task.id}")
+        if args.type == "pikpak":
+            tasks = await Client.QueryPikPakTasks(TaskStatus(args.filter) if args.filter is not None else None)
+            # 格式化输出所有task信息id，status，lastStatus的信息，输出表格
+            table = [[task.id, task._status.value, task.status.value] for task in tasks]
+            headers = ["id", "status", "details"]
+            await self.Print(tabulate(table, headers, tablefmt="grid"))
+        elif args.type == "filedownload":
+            tasks = await Client.QueryFileDownloadTasks(TaskStatus(args.filter) if args.filter is not None else None)
+            # 格式化输出所有task信息id，status，lastStatus的信息，输出表格
+            table = [[task.id, task._status.value, task.status.value, task.relativePath] for task in tasks]
+            headers = ["id", "status", "details", "path"]
+            await self.Print(tabulate(table, headers, tablefmt="grid"))
 
     retry_parser = cmd2.Cmd2ArgumentParser()
     retry_parser.add_argument("taskId", help="taskId")
-    @RunSync
     @cmd2.with_argparser(retry_parser)
+    @RunSync
     async def do_retry(self, args):
         """
         Retry a task
@@ -299,7 +335,10 @@ async def mainLoop():
         stop = False
         while not stop:
             line = await console.Input(console.prompt)
-            stop = console.onecmd_plus_hooks(line)
+            try:
+                stop = console.onecmd_plus_hooks(line)
+            except asyncio.CancelledError:
+                await console.Print("^C: Task cancelled")
     finally:
         console.postloop()
         clientWorker.cancel()

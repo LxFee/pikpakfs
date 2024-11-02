@@ -7,7 +7,7 @@ import os
 import logging
 from enum import Enum
 import asyncio
-import uuid
+import shortuuid
 from utils import PathWalker
 from typing import Callable, Awaitable
 
@@ -20,8 +20,8 @@ class TaskStatus(Enum):
 
 class PikPakTaskStatus(Enum):
     PENDING = "pending"
-    REMOTE_DOWNLOADING = "remote downloading"
-    LOCAL_DOWNLOADING = "local downloading"
+    REMOTE_DOWNLOADING = "remote"
+    LOCAL_DOWNLOADING = "local"
 
 class FileDownloadTaskStatus(Enum):
     PENDING = "pending"
@@ -33,7 +33,7 @@ class UnRecoverableError(Exception):
 
 class TaskBase:
     def __init__(self, id : str, tag : str = "", maxConcurrentNumber = -1):
-        self.id : str = uuid.uuid4() if id is None else id 
+        self.id : str = shortuuid.uuid() if id is None else id 
         self.tag : str = tag
         self.maxConcurrentNumber : int = maxConcurrentNumber
 
@@ -59,11 +59,12 @@ class FileDownloadTask(TaskBase):
     TAG = "FileDownloadTask"
     MAX_CONCURRENT_NUMBER = 5
 
-    def __init__(self, nodeId : str, PikPakTaskId : str, id : str = None, status : FileDownloadTaskStatus = FileDownloadTaskStatus.PENDING):
-        super().__init__(id, FileDownloadTask.TAG, FileDownloadTask.MAX_CONCURRENT_NUMBER)
+    def __init__(self, nodeId : str, PikPakTaskId : str, relativePath : str, status : FileDownloadTaskStatus = FileDownloadTaskStatus.PENDING):
+        super().__init__(nodeId, FileDownloadTask.TAG, FileDownloadTask.MAX_CONCURRENT_NUMBER)
         self.status : FileDownloadTaskStatus = status
         self.PikPakTaskId : str = PikPakTaskId
         self.nodeId : str = nodeId
+        self.relativePath : str = relativePath
 
 async def TaskWorker(task : TaskBase):
     try:
@@ -158,10 +159,32 @@ class PikPakFs:
             self.nodes[task.nodeId] = DirNode(task.nodeId, task.name, task.toDirId)    
         else:
             self.nodes[task.nodeId] = FileNode(task.nodeId, task.name, task.toDirId)
+        
         father = self.GetNodeById(task.toDirId)
         if father.id is not None and task.nodeId not in father.childrenId:
             father.childrenId.append(task.nodeId)
         task.status = PikPakTaskStatus.LOCAL_DOWNLOADING
+
+    async def _pikpak_local_downloading(self, task : PikPakTask):
+        node = self.GetNodeById(task.nodeId)
+        if IsFile(node):
+            fileDownloadTask = FileDownloadTask(task.nodeId, task.id, self.NodeToPath(node, node))
+            fileDownloadTask.handler = self._file_download_task_handler
+            self._add_task(fileDownloadTask)
+        elif IsDir(node):
+            # 使用广度优先遍历
+            queue : list[DirNode] = [node]
+            while len(queue) > 0:
+                current = queue.pop(0)
+                await self.Refresh(current)
+                for childId in current.childrenId:
+                    child = self.GetNodeById(childId)
+                    if IsDir(child):
+                        queue.append(child)
+                    elif IsFile(child):
+                        fileDownloadTask = FileDownloadTask(childId, task.id, self.NodeToPath(child, node))
+                        fileDownloadTask.handler = self._file_download_task_handler
+                        self._add_task(fileDownloadTask)
 
     async def _pikpak_task_handler(self, task : PikPakTask):
         while True:
@@ -170,7 +193,7 @@ class PikPakFs:
             elif task.status == PikPakTaskStatus.REMOTE_DOWNLOADING:
                 await self._pikpak_offline_downloading(task)
             elif task.status == PikPakTaskStatus.LOCAL_DOWNLOADING:
-                break
+                await self._pikpak_local_downloading(task)
             else:
                 break
 
@@ -180,7 +203,11 @@ class PikPakFs:
     def _add_task(self, task : TaskBase):
         if self.taskQueues.get(task.tag) is None:
             self.taskQueues[task.tag] = []
-        self.taskQueues[task.tag].append(task)
+        taskQueue = self.taskQueues[task.tag]
+        for t in taskQueue:
+            if t.id == task.id:
+                return
+        taskQueue.append(task)
     
     async def StopTask(self, task : TaskBase):
         pass
@@ -317,16 +344,16 @@ class PikPakFs:
         
         node.lastUpdate = datetime.now()
 
-    async def PathToNode(self, pathStr : str) -> FsNode:
-        father, sonName = await self.PathToFatherNodeAndNodeName(pathStr)
+    async def PathToNode(self, path : str) -> FsNode:
+        father, sonName = await self.PathToFatherNodeAndNodeName(path)
         if sonName == "":
             return father
         if not IsDir(father):
             return None
         return self.FindChildInDirByName(father, sonName)
       
-    async def PathToFatherNodeAndNodeName(self, pathStr : str) -> tuple[FsNode, str]:
-        pathWalker = PathWalker(pathStr)
+    async def PathToFatherNodeAndNodeName(self, path : str) -> tuple[FsNode, str]:
+        pathWalker = PathWalker(path)
         father : FsNode = None
         sonName : str = None
         current = self.root if pathWalker.IsAbsolute() else self.currentLocation
@@ -354,12 +381,14 @@ class PikPakFs:
         
         return father, sonName
 
-    def NodeToPath(self, node : FsNode) -> str:
-        if node is self.root:
+    def NodeToPath(self, node : FsNode, root : FsNode = None) -> str:
+        if root is None:
+            root = self.root
+        if node is root:
             return "/"
         spots : list[str] = []
         current = node
-        while current is not self.root:
+        while current is not root:
             spots.append(current.name)
             current = self.GetFatherNode(current)
         spots.append("")
@@ -392,11 +421,25 @@ class PikPakFs:
         task.handler = self._pikpak_task_handler
         self._add_task(task)
         return task
+    
+    async def Pull(self, node : FsNode) -> PikPakTask:
+        task = PikPakTask("", node.fatherId, node.id, PikPakTaskStatus.LOCAL_DOWNLOADING)
+        task.handler = self._pikpak_local_downloading
+        self._add_task(task)
+        return task
 
     async def QueryPikPakTasks(self, filterStatus : TaskStatus = None) -> list[PikPakTask]:
         if PikPakTask.TAG not in self.taskQueues:
             return []
         taskQueue = self.taskQueues[PikPakTask.TAG]
+        if filterStatus is None:
+            return taskQueue
+        return [task for task in taskQueue if task._status == filterStatus]
+    
+    async def QueryFileDownloadTasks(self, filterStatus : TaskStatus = None) -> list[FileDownloadTask]:
+        if FileDownloadTask.TAG not in self.taskQueues:
+            return []
+        taskQueue = self.taskQueues[FileDownloadTask.TAG]
         if filterStatus is None:
             return taskQueue
         return [task for task in taskQueue if task._status == filterStatus]
