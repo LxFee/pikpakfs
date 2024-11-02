@@ -10,6 +10,7 @@ import asyncio
 import shortuuid
 from utils import PathWalker
 from typing import Callable, Awaitable
+import random
 
 class TaskStatus(Enum):
     PENDING = "pending"
@@ -22,11 +23,13 @@ class PikPakTaskStatus(Enum):
     PENDING = "pending"
     REMOTE_DOWNLOADING = "remote"
     LOCAL_DOWNLOADING = "local"
+    DONE = "done"
 
 class FileDownloadTaskStatus(Enum):
     PENDING = "pending"
     DOWNLOADING = "downloading"
-
+    DONE = "done"
+    
 class UnRecoverableError(Exception):
     def __init__(self, message):
         super().__init__(message)
@@ -36,6 +39,7 @@ class TaskBase:
         self.id : str = shortuuid.uuid() if id is None else id 
         self.tag : str = tag
         self.maxConcurrentNumber : int = maxConcurrentNumber
+        self.name : str = ""
 
         self._status : TaskStatus = TaskStatus.PENDING
         
@@ -46,25 +50,36 @@ class PikPakTask(TaskBase):
     TAG = "PikPakTask"
     MAX_CONCURRENT_NUMBER = 5
 
-    def __init__(self, torrent : str, toDirId : str, id : str = None, status : PikPakTaskStatus = PikPakTaskStatus.PENDING):
+    def __init__(self, torrent : str, toDirId : str, nodeId : str = None, status : PikPakTaskStatus = PikPakTaskStatus.PENDING, id : str = None):
         super().__init__(id, PikPakTask.TAG, PikPakTask.MAX_CONCURRENT_NUMBER)
         self.status : PikPakTaskStatus = status
         self.toDirId : str = toDirId
-        self.nodeId : str = None
-        self.name : str = ""
+        self.nodeId : str = nodeId
         self.torrent : str = torrent # todo: 将torrent的附加参数去掉再加入
         self.remoteTaskId : str = None
+
+        self.progress : str = ""
+
+    def __eq__(self, other):
+        if isinstance(other, PikPakTask):
+            return self is other or self.nodeId == other.nodeId
+        return False
 
 class FileDownloadTask(TaskBase):
     TAG = "FileDownloadTask"
     MAX_CONCURRENT_NUMBER = 5
 
-    def __init__(self, nodeId : str, PikPakTaskId : str, relativePath : str, status : FileDownloadTaskStatus = FileDownloadTaskStatus.PENDING):
-        super().__init__(nodeId, FileDownloadTask.TAG, FileDownloadTask.MAX_CONCURRENT_NUMBER)
+    def __init__(self, nodeId : str, PikPakTaskId : str, relativePath : str, status : FileDownloadTaskStatus = FileDownloadTaskStatus.PENDING, id : str = None):
+        super().__init__(id, FileDownloadTask.TAG, FileDownloadTask.MAX_CONCURRENT_NUMBER)
         self.status : FileDownloadTaskStatus = status
         self.PikPakTaskId : str = PikPakTaskId
         self.nodeId : str = nodeId
         self.relativePath : str = relativePath
+    
+    def __eq__(self, other):
+        if isinstance(other, FileDownloadTask):
+            return self is other or (self.nodeId == other.nodeId and self.PikPakTaskId == other.PikPakTaskId)
+        return False
 
 async def TaskWorker(task : TaskBase):
     try:
@@ -82,7 +97,7 @@ async def TaskWorker(task : TaskBase):
 async def TaskManager(taskQueues : Dict[str, list[TaskBase]]):
     # todo: 处理取消的情况
     while True:
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
         for taskQueue in taskQueues.values():
             notRunningTasks = [task for task in taskQueue if task.worker is None or task.worker.done()]
             runningTasksNumber = len(taskQueue) - len(notRunningTasks)
@@ -170,6 +185,7 @@ class PikPakFs:
         if IsFile(node):
             fileDownloadTask = FileDownloadTask(task.nodeId, task.id, self.NodeToPath(node, node))
             fileDownloadTask.handler = self._file_download_task_handler
+            fileDownloadTask.name = task.name
             self._add_task(fileDownloadTask)
         elif IsDir(node):
             # 使用广度优先遍历
@@ -184,7 +200,39 @@ class PikPakFs:
                     elif IsFile(child):
                         fileDownloadTask = FileDownloadTask(childId, task.id, self.NodeToPath(child, node))
                         fileDownloadTask.handler = self._file_download_task_handler
+                        fileDownloadTask.name = task.name
                         self._add_task(fileDownloadTask)
+        
+        # 开始等待下载任务完成
+        while True:
+            fileDownloadTasks = self.taskQueues.get(FileDownloadTask.TAG)
+            myTasks = [myTask for myTask in fileDownloadTasks if myTask.PikPakTaskId == task.id]
+            allNumber = len(myTasks)
+            notCompletedNumber = 0
+            pausedNumber = 0
+            errorNumber = 0
+            for myTask in myTasks:
+                if myTask._status == TaskStatus.PAUSED:
+                    pausedNumber += 1
+                if myTask._status == TaskStatus.ERROR:
+                    errorNumber += 1
+                if myTask._status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+                    notCompletedNumber += 1
+            
+            runningNumber = allNumber - notCompletedNumber - pausedNumber - errorNumber
+            task.progress = f"{runningNumber}/{allNumber} ({pausedNumber}|{errorNumber})"
+            
+            if notCompletedNumber > 0:
+                await asyncio.sleep(0.5)
+                continue
+            if errorNumber > 0:
+                raise Exception("file download failed")
+            if pausedNumber > 0:
+                raise asyncio.CancelledError()
+            break
+            
+        task.status = PikPakTaskStatus.DONE
+            
 
     async def _pikpak_task_handler(self, task : PikPakTask):
         while True:
@@ -198,32 +246,39 @@ class PikPakFs:
                 break
 
     async def _file_download_task_handler(self, task : FileDownloadTask):
+        if random.randint(1, 5) == 2:
+            raise asyncio.CancelledError()
         pass
 
     def _add_task(self, task : TaskBase):
         if self.taskQueues.get(task.tag) is None:
             self.taskQueues[task.tag] = []
         taskQueue = self.taskQueues[task.tag]
-        for t in taskQueue:
-            if t.id == task.id:
+        for other in taskQueue:
+            if other == task:
+                if other._status != TaskStatus.DONE:
+                    other._status = TaskStatus.PENDING
                 return
         taskQueue.append(task)
     
-    async def StopTask(self, task : TaskBase):
-        pass
+    async def GetTaskById(self, taskId : str) -> TaskBase:
+        for taskQueue in self.taskQueues.values():
+            for task in taskQueue:
+                if task.id == taskId:
+                    return task
+        return None
 
-    async def ResumeTask(self, task : TaskBase):
-        pass
+    async def StopTask(self, taskId : str):
+        task = await self.GetTaskById(taskId)
+        if task is not None and task._status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+            if task.worker is not None:
+                task.worker.cancel()
+            task.worker = None
 
-    async def RetryTask(self, taskId : str):
-        if PikPakTask.TAG not in self.taskQueues:
-            return
-        for task in self.taskQueues[PikPakTask.TAG]:
-            if task.id == taskId and task._status == TaskStatus.ERROR:
-                task._status = TaskStatus.PENDING
-                break
-            elif task.id == taskId:
-                break
+    async def ResumeTask(self, taskId : str):
+        task = await self.GetTaskById(taskId)
+        if task is not None and task._status in {TaskStatus.PAUSED, TaskStatus.ERROR}:
+            task._status = TaskStatus.PENDING
 
     def Start(self):
         return asyncio.create_task(TaskManager(self.taskQueues))
@@ -424,7 +479,8 @@ class PikPakFs:
     
     async def Pull(self, node : FsNode) -> PikPakTask:
         task = PikPakTask("", node.fatherId, node.id, PikPakTaskStatus.LOCAL_DOWNLOADING)
-        task.handler = self._pikpak_local_downloading
+        task.name = node.name
+        task.handler = self._pikpak_task_handler
         self._add_task(task)
         return task
 

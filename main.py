@@ -7,6 +7,8 @@ import colorlog
 from PikPakFs import PikPakFs, IsDir, IsFile, TaskStatus
 import os
 from tabulate import tabulate
+import wcwidth
+import types
 
 LogFormatter = colorlog.ColoredFormatter(
         "%(log_color)s%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -60,6 +62,12 @@ class RunSync:
             return result
         else:
             return asyncio.run_coroutine_threadsafe(func(*args, **kwargs), MainLoop).result()
+
+    def __get__(self, instance, cls):
+        if instance is None:
+            return self
+        else:
+            return types.MethodType(self, instance)
 
 class Console(cmd2.Cmd):
     def _io_worker(self, loop):
@@ -165,7 +173,8 @@ class Console(cmd2.Cmd):
                     matches.append(text[:text.rfind(sonName)] + child.name)
                 matchesNode.append(child)
         if len(matchesNode) == 1 and IsDir(matchesNode[0]):
-            matches[0] += "/"
+            if matches[0] == sonName:
+                matches[0] += "/"
             self.allow_appended_space = False
             self.allow_closing_quote = False
         return matches
@@ -304,8 +313,8 @@ class Console(cmd2.Cmd):
         if args.type == "pikpak":
             tasks = await Client.QueryPikPakTasks(TaskStatus(args.filter) if args.filter is not None else None)
             # 格式化输出所有task信息id，status，lastStatus的信息，输出表格
-            table = [[task.id, task._status.value, task.status.value] for task in tasks]
-            headers = ["id", "status", "details"]
+            table = [[task.id, task._status.value, task.status.value, task.progress] for task in tasks]
+            headers = ["id", "status", "details", "progress"]
             await self.Print(tabulate(table, headers, tablefmt="grid"))
         elif args.type == "filedownload":
             tasks = await Client.QueryFileDownloadTasks(TaskStatus(args.filter) if args.filter is not None else None)
@@ -314,15 +323,24 @@ class Console(cmd2.Cmd):
             headers = ["id", "status", "details", "path"]
             await self.Print(tabulate(table, headers, tablefmt="grid"))
 
-    retry_parser = cmd2.Cmd2ArgumentParser()
-    retry_parser.add_argument("taskId", help="taskId")
-    @cmd2.with_argparser(retry_parser)
+    taskid_parser = cmd2.Cmd2ArgumentParser()
+    taskid_parser.add_argument("taskId", help="taskId")
+    
+    @cmd2.with_argparser(taskid_parser)
     @RunSync
-    async def do_retry(self, args):
+    async def do_pause(self, args):
         """
-        Retry a task
+        Stop a task
         """
-        await Client.RetryTask(args.taskId)
+        await Client.StopTask(args.taskId)
+
+    @cmd2.with_argparser(taskid_parser)
+    @RunSync
+    async def do_resume(self, args):
+        """
+        Resume a task
+        """
+        await Client.ResumeTask(args.taskId)
 
 async def mainLoop():
     global MainLoop, Client
