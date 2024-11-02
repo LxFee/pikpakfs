@@ -4,12 +4,11 @@ from functools import wraps
 import logging
 import threading
 import colorlog
-from pikpakFs import PKFs, IsDir, IsFile, PKTaskStatus
+from PikPakFs import PikPakFs, IsDir, IsFile, TaskStatus
 import os
-import json
+import keyboard
 
-def setup_logging():
-    formatter = colorlog.ColoredFormatter(
+LogFormatter = colorlog.ColoredFormatter(
         "%(log_color)s%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt='%Y-%m-%d %H:%M:%S',
         reset=True,
@@ -21,22 +20,19 @@ def setup_logging():
             'CRITICAL': 'red,bg_white',
         }
     )
-    handler = logging.StreamHandler()
-    handler.setFormatter(formatter)
-    handler.setLevel(logging.INFO)
 
+def setup_logging():
     file_handler = logging.FileHandler('app.log')
-    file_handler.setFormatter(formatter)
+    file_handler.setFormatter(LogFormatter)
     file_handler.setLevel(logging.DEBUG)
     
     logger = logging.getLogger()
-    logger.addHandler(handler)
     logger.addHandler(file_handler)
     logger.setLevel(logging.DEBUG)
 
 setup_logging()
 MainLoop : asyncio.AbstractEventLoop = None
-Client = PKFs("token.json", proxy="http://127.0.0.1:7897")
+Client = PikPakFs("token.json", proxy="http://127.0.0.1:7897")
 
 def RunSync(func):
     @wraps(func)
@@ -57,20 +53,24 @@ class Console(cmd2.Cmd):
         asyncio.set_event_loop(loop)
         loop.run_forever()
 
-    async def AsyncInput(self, prompt):
+    async def Input(self, prompt):
         async def _input(prompt):
             return self._read_command_line(prompt)
-        future = asyncio.run_coroutine_threadsafe(_input(prompt), self.inputLoop)
+        future = asyncio.run_coroutine_threadsafe(_input(prompt), self.ioLoop)
         return await asyncio.wrap_future(future)
 
-    async def AsyncPrint(self, *args, **kwargs):
+    async def Print(self, *args, **kwargs):
         async def _print(*args, **kwargs):
             print(*args, **kwargs)
-        future = asyncio.run_coroutine_threadsafe(_print(*args, **kwargs), self.outputLoop)
+        future = asyncio.run_coroutine_threadsafe(_print(*args, **kwargs), self.ioLoop)
         await asyncio.wrap_future(future)
 
     def __init__(self):
         super().__init__()
+        self.log_handler = logging.StreamHandler()
+        self.log_handler.setFormatter(LogFormatter)
+        self.log_handler.setLevel(logging.CRITICAL)
+        logging.getLogger().addHandler(self.log_handler)
 
     def preloop(self):
         # 1. 设置忽略SIGINT
@@ -80,13 +80,9 @@ class Console(cmd2.Cmd):
         signal.signal(signal.SIGINT, signal_handler)
 
         # 2. 创建IO线程处理输入输出
-        self.inputLoop = asyncio.new_event_loop()
-        self.inputThread = threading.Thread(target=self._io_worker, args=(self.inputLoop,))
-        self.inputThread.start()
-
-        self.outputLoop = asyncio.new_event_loop()
-        self.outputThread = threading.Thread(target=self._io_worker, args=(self.outputLoop,))
-        self.outputThread.start()
+        self.ioLoop = asyncio.new_event_loop()
+        self.ioThread = threading.Thread(target=self._io_worker, args=(self.ioLoop,))
+        self.ioThread.start()
 
         # 3. 设置console
         self.saved_readline_settings = None
@@ -101,32 +97,29 @@ class Console(cmd2.Cmd):
         
         # 2. 停止IO线程
         # https://stackoverflow.com/questions/51642267/asyncio-how-do-you-use-run-forever
-        self.inputLoop.call_soon_threadsafe(self.inputLoop.stop)
-        self.inputThread.join()
-
-        self.outputLoop.call_soon_threadsafe(self.outputLoop.stop)
-        self.outputThread.join()
+        self.ioLoop.call_soon_threadsafe(self.ioLoop.stop)
+        self.ioThread.join()
     
     # commands #
     def do_logging_off(self, args):
         """
         Disable logging
         """
-        logging.getLogger().setLevel(logging.CRITICAL)
+        self.log_handler.setLevel(logging.CRITICAL)
         logging.critical("Logging disabled")
     
     def do_logging_debug(self, args):
         """
         Enable debug mode
         """
-        logging.getLogger().setLevel(logging.DEBUG)
+        self.log_handler.setLevel(logging.DEBUG)
         logging.debug("Debug mode enabled")
 
     def do_logging_info(self, args):
         """
         Enable info mode
         """
-        logging.getLogger().setLevel(logging.INFO)
+        self.log_handler.setLevel(logging.INFO)
         logging.info("Info mode enabled")
 
     login_parser = cmd2.Cmd2ArgumentParser()
@@ -139,7 +132,7 @@ class Console(cmd2.Cmd):
         Login to pikpak
         """
         await Client.Login(args.username, args.password)
-        await self.AsyncPrint("Logged in successfully")
+        await self.Print("Logged in successfully")
 
     async def _path_completer(self, text, line, begidx, endidx, filterfiles):   
         father, sonName = await Client.PathToFatherNodeAndNodeName(text)
@@ -178,15 +171,15 @@ class Console(cmd2.Cmd):
         """
         node = args.path
         if node is None:
-            await self.AsyncPrint("Invalid path")
+            await self.Print("Invalid path")
             return
         await Client.Refresh(node)
         if IsDir(node):
             for childId in node.childrenId:
                 child = Client.GetNodeById(childId)
-                await self.AsyncPrint(child.name)
+                await self.Print(child.name)
         elif IsFile(node):
-            await self.AsyncPrint(f"{node.name}: {node.url}")            
+            await self.Print(f"{node.name}: {node.url}")            
     
     @RunSync
     async def complete_cd(self, text, line, begidx, endidx):
@@ -202,7 +195,7 @@ class Console(cmd2.Cmd):
         """
         node = args.path
         if not IsDir(node):
-            await self.AsyncPrint("Invalid directory")
+            await self.Print("Invalid directory")
             return
         Client.currentLocation = node
     
@@ -211,7 +204,7 @@ class Console(cmd2.Cmd):
         """
         Print current working directory
         """
-        await self.AsyncPrint(Client.NodeToPath(Client.currentLocation))
+        await self.Print(Client.NodeToPath(Client.currentLocation))
 
     def do_clear(self, args):
         """
@@ -247,11 +240,11 @@ class Console(cmd2.Cmd):
         """
         father, sonName = args.path_and_son
         if not IsDir(father) or sonName == "" or sonName == None:
-            await self.AsyncPrint("Invalid path")
+            await self.Print("Invalid path")
             return
         child = Client.FindChildInDirByName(father, sonName)
         if child is not None:
-            await self.AsyncPrint("Path already exists")
+            await self.Print("Path already exists")
             return
         await Client.MakeDir(father, sonName)
 
@@ -266,28 +259,27 @@ class Console(cmd2.Cmd):
         """
         node = args.path
         if not IsDir(node):
-            await self.AsyncPrint("Invalid directory")
+            await self.Print("Invalid directory")
             return
         task = await Client.Download(args.url, node)
-        await self.AsyncPrint(f"Task {task.id} created")
+        await self.Print(f"Task {task.id} created")
 
     query_parser = cmd2.Cmd2ArgumentParser()
-    query_parser.add_argument("-f", "--filter", help="filter", nargs="?", choices=[member.value for member in PKTaskStatus])
+    query_parser.add_argument("-f", "--filter", help="filter", nargs="?", choices=[member.value for member in TaskStatus])
     @RunSync
     @cmd2.with_argparser(query_parser)
     async def do_query(self, args):
         """
         Query All Tasks
         """
-        tasks = await Client.QueryTasks(PKTaskStatus(args.filter) if args.filter is not None else None)
+        tasks = await Client.QueryPikPakTasks(TaskStatus(args.filter) if args.filter is not None else None)
         # 格式化输出所有task信息id，status，lastStatus的信息，输出表格
-        await self.AsyncPrint("id\tstatus\tlastStatus")
+        await self.Print("tstatus\tdetails\tid")
         for task in tasks:
-            await self.AsyncPrint(f"{task.id}\t{task.status.value}\t{task.recoverStatus.value}")
+            await self.Print(f"{task._status.value}\t{task.status.value}\t{task.id}")
 
     retry_parser = cmd2.Cmd2ArgumentParser()
-    retry_parser.add_argument("taskId", help="taskId", type=int)
-
+    retry_parser.add_argument("taskId", help="taskId")
     @RunSync
     @cmd2.with_argparser(retry_parser)
     async def do_retry(self, args):
@@ -299,17 +291,18 @@ class Console(cmd2.Cmd):
 async def mainLoop():
     global MainLoop, Client
     MainLoop = asyncio.get_running_loop()
-    Client.Start()
+    clientWorker = Client.Start()
 
     console = Console()
     console.preloop()
     try:
         stop = False
         while not stop:
-            line = await console.AsyncInput(console.prompt)
+            line = await console.Input(console.prompt)
             stop = console.onecmd_plus_hooks(line)
     finally:
         console.postloop()
+        clientWorker.cancel()
 
 if __name__ == "__main__":  
     nest_asyncio.apply()
