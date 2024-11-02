@@ -4,11 +4,11 @@ from functools import wraps
 import logging
 import threading
 import colorlog
-from PikPakFs import PikPakFs, IsDir, IsFile, TaskStatus
+from PikPakFileSystem import PikPakFileSystem
 import os
 from tabulate import tabulate
-import wcwidth
 import types
+from TaskManager import TaskManager, TaskStatus, TorrentTask, FileDownloadTask
 
 LogFormatter = colorlog.ColoredFormatter(
         "%(log_color)s%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -34,7 +34,7 @@ def setup_logging():
 
 setup_logging()
 MainLoop : asyncio.AbstractEventLoop = None
-Client = PikPakFs("token.json", proxy="http://127.0.0.1:7897")
+Client = PikPakFileSystem(auth_cache_path = "token.json", proxy_address="http://127.0.0.1:7897")
 
 class RunSync:
     _current_task : asyncio.Task = None
@@ -69,18 +69,19 @@ class RunSync:
         else:
             return types.MethodType(self, instance)
 
-class Console(cmd2.Cmd):
+class App(cmd2.Cmd):
+    #region Console设置
     def _io_worker(self, loop):
         asyncio.set_event_loop(loop)
         loop.run_forever()
 
-    async def Input(self, prompt):
+    async def input(self, prompt):
         async def _input(prompt):
             return self._read_command_line(prompt)
         future = asyncio.run_coroutine_threadsafe(_input(prompt), self.ioLoop)
         return await asyncio.wrap_future(future)
 
-    async def Print(self, *args, **kwargs):
+    async def print(self, *args, **kwargs):
         async def _print(*args, **kwargs):
             print(*args, **kwargs)
         future = asyncio.run_coroutine_threadsafe(_print(*args, **kwargs), self.ioLoop)
@@ -92,6 +93,8 @@ class Console(cmd2.Cmd):
         self.log_handler.setFormatter(LogFormatter)
         self.log_handler.setLevel(logging.CRITICAL)
         logging.getLogger().addHandler(self.log_handler)
+
+        self.task_manager = TaskManager(Client)
 
     def preloop(self):
         # 1. 设置忽略SIGINT
@@ -109,6 +112,9 @@ class Console(cmd2.Cmd):
         self.saved_readline_settings = None
         with self.sigint_protection:
             self.saved_readline_settings = self._set_up_cmd2_readline()
+        
+        # 4. 启动任务管理器
+        self.task_manager.Start()
     
     def postloop(self):
         # 1. 还原console设置
@@ -120,8 +126,13 @@ class Console(cmd2.Cmd):
         # https://stackoverflow.com/questions/51642267/asyncio-how-do-you-use-run-forever
         self.ioLoop.call_soon_threadsafe(self.ioLoop.stop)
         self.ioThread.join()
-    
-    # commands #
+
+        # 3. 停止任务管理器
+        self.task_manager.Stop()
+
+    #endregion
+
+    #region 所有命令
     def do_logging_off(self, args):
         """
         Disable logging
@@ -153,27 +164,21 @@ class Console(cmd2.Cmd):
         Login to pikpak
         """
         await Client.Login(args.username, args.password)
-        await self.Print("Logged in successfully")
+        await self.print("Logged in successfully")
 
     async def _path_completer(self, text, line, begidx, endidx, ignoreFiles):   
-        father, sonName = await Client.PathToFatherNodeAndNodeName(text)
-        if not IsDir(father):
-            return []
+        father_path, son_name = await Client.SplitPath(text)
+        children_names = await Client.GetChildrenNames(father_path, ignoreFiles)
         matches = []
-        matchesNode = []
-        for childId in father.childrenId:
-            child = Client.GetNodeById(childId)
-            if ignoreFiles and IsFile(child):
-                continue
-            if child.name.startswith(sonName):
-                self.display_matches.append(child.name)
-                if sonName == "":
-                    matches.append(text + child.name)
-                elif text.endswith(sonName):
-                    matches.append(text[:text.rfind(sonName)] + child.name)
-                matchesNode.append(child)
-        if len(matchesNode) == 1 and IsDir(matchesNode[0]):
-            if matches[0] == sonName:
+        for child_name in children_names:
+            if child_name.startswith(son_name):
+                self.display_matches.append(child_name)
+                if son_name == "":
+                    matches.append(text + child_name)
+                elif text.endswith(son_name):
+                    matches.append(text[:text.rfind(son_name)] + child_name)
+        if len(matches) == 1 and await Client.IsDir(father_path + matches[0]):
+            if matches[0] == son_name:
                 matches[0] += "/"
             self.allow_appended_space = False
             self.allow_closing_quote = False
@@ -184,49 +189,37 @@ class Console(cmd2.Cmd):
         return await self._path_completer(text, line, begidx, endidx, False)
 
     ls_parser = cmd2.Cmd2ArgumentParser()
-    ls_parser.add_argument("path", help="path", default="", nargs="?", type=RunSync(Client.PathToNode))
+    ls_parser.add_argument("path", help="path", default="", nargs="?")
     @cmd2.with_argparser(ls_parser)
     @RunSync
     async def do_ls(self, args):
         """
         List files in a directory
         """
-        node = args.path
-        if node is None:
-            await self.Print("Invalid path")
-            return
-        await Client.Refresh(node)
-        if IsDir(node):
-            for childId in node.childrenId:
-                child = Client.GetNodeById(childId)
-                await self.Print(child.name)
-        elif IsFile(node):
-            await self.Print(f"{node.name}: {node.url}")            
+        if await Client.IsDir(args.path):
+            for child_name in await Client.GetChildrenNames(args.path, False):
+                await self.print(child_name)
     
     @RunSync
     async def complete_cd(self, text, line, begidx, endidx):
         return await self._path_completer(text, line, begidx, endidx, True)
 
     cd_parser = cmd2.Cmd2ArgumentParser()
-    cd_parser.add_argument("path", help="path", default="", nargs="?", type=RunSync(Client.PathToNode))
+    cd_parser.add_argument("path", help="path", default="", nargs="?")
     @cmd2.with_argparser(cd_parser)
     @RunSync
     async def do_cd(self, args):
         """
         Change directory
         """
-        node = args.path
-        if not IsDir(node):
-            await self.Print("Invalid directory")
-            return
-        Client.currentLocation = node
+        await Client.SetCwd(args.path)
     
     @RunSync
     async def do_cwd(self, args):
         """
         Print current working directory
         """
-        await self.Print(Client.NodeToPath(Client.currentLocation))
+        await self.print(await Client.GetCwd())
 
     def do_clear(self, args):
         """
@@ -239,7 +232,7 @@ class Console(cmd2.Cmd):
         return await self._path_completer(text, line, begidx, endidx, False)
 
     rm_parser = cmd2.Cmd2ArgumentParser()
-    rm_parser.add_argument("paths", help="paths", default="", nargs="+", type=RunSync(Client.PathToNode))
+    rm_parser.add_argument("paths", help="paths", default="", nargs="+")
     @cmd2.with_argparser(rm_parser)
     @RunSync
     async def do_rm(self, args):
@@ -253,56 +246,44 @@ class Console(cmd2.Cmd):
         return await self._path_completer(text, line, begidx, endidx, True)
 
     mkdir_parser = cmd2.Cmd2ArgumentParser()
-    mkdir_parser.add_argument("path_and_son", help="path and son", default="", nargs="?", type=RunSync(Client.PathToFatherNodeAndNodeName))
+    mkdir_parser.add_argument("path", help="new directory path")
     @cmd2.with_argparser(mkdir_parser)
     @RunSync
     async def do_mkdir(self, args):
         """
         Create a directory
         """
-        father, sonName = args.path_and_son
-        if not IsDir(father) or sonName == "" or sonName == None:
-            await self.Print("Invalid path")
-            return
-        child = Client.FindChildInDirByName(father, sonName)
-        if child is not None:
-            await self.Print("Path already exists")
-            return
-        await Client.MakeDir(father, sonName)
+        await Client.MakeDir(args.path)
 
     download_parser = cmd2.Cmd2ArgumentParser()
-    download_parser.add_argument("url", help="url")
-    download_parser.add_argument("path", help="path", default="", nargs="?", type=RunSync(Client.PathToNode))
+    download_parser.add_argument("torrent", help="torrent")
     @cmd2.with_argparser(download_parser)
     @RunSync
     async def do_download(self, args):
         """
         Download a file or directory
         """
-        node = args.path
-        if not IsDir(node):
-            await self.Print("Invalid directory")
-            return
-        task = await Client.Download(args.url, node)
-        await self.Print(f"Task {task.id} created")
+        task_id = await self.task_manager.CreateTorrentTask(args.torrent, await Client.GetCwd())
+        await self.print(f"Task {task_id} created")
 
     @RunSync
     async def complete_pull(self, text, line, begidx, endidx):
         return await self._path_completer(text, line, begidx, endidx, False)
 
     pull_parser = cmd2.Cmd2ArgumentParser()
-    pull_parser.add_argument("target", help="pull target", type=RunSync(Client.PathToNode))
+    pull_parser.add_argument("target", help="pull target")
     @cmd2.with_argparser(pull_parser)
     @RunSync
     async def do_pull(self, args):
         """
         Pull a file or directory
         """
-        await Client.Pull(args.target)
+        task_id = await self.task_manager.PullRemote(await Client.ToFullPath(args.target))
+        await self.print(f"Task {task_id} created")
         
 
     query_parser = cmd2.Cmd2ArgumentParser()
-    query_parser.add_argument("-t", "--type", help="type", nargs="?", choices=["pikpak", "filedownload"], default="pikpak")
+    query_parser.add_argument("-t", "--type", help="type", nargs="?", choices=["torrent", "file"], default="torrent")
     query_parser.add_argument("-f", "--filter", help="filter", nargs="?", choices=[member.value for member in TaskStatus])
     @cmd2.with_argparser(query_parser)
     @RunSync
@@ -310,21 +291,21 @@ class Console(cmd2.Cmd):
         """
         Query All Tasks
         """
-        if args.type == "pikpak":
-            tasks = await Client.QueryPikPakTasks(TaskStatus(args.filter) if args.filter is not None else None)
+        filter_status = TaskStatus(args.filter) if args.filter is not None else None
+        if args.type == "torrent":
+            tasks = await self.task_manager.QueryTasks(TorrentTask.TAG, filter_status)
             # 格式化输出所有task信息id，status，lastStatus的信息，输出表格
-            table = [[task.id, task._status.value, task.status.value, task.progress] for task in tasks]
+            table = [[task.id, task.status.value, task.torrent_status.value, task.info] for task in tasks if isinstance(task, TorrentTask)]
             headers = ["id", "status", "details", "progress"]
-            await self.Print(tabulate(table, headers, tablefmt="grid"))
-        elif args.type == "filedownload":
-            tasks = await Client.QueryFileDownloadTasks(TaskStatus(args.filter) if args.filter is not None else None)
-            # 格式化输出所有task信息id，status，lastStatus的信息，输出表格
-            table = [[task.id, task._status.value, task.status.value, task.relativePath] for task in tasks]
-            headers = ["id", "status", "details", "path"]
-            await self.Print(tabulate(table, headers, tablefmt="grid"))
+            await self.print(tabulate(table, headers, tablefmt="grid"))
+        elif args.type == "file":
+            tasks = await self.task_manager.QueryTasks(FileDownloadTask.TAG, filter_status)
+            table = [[task.id, task.status.value, task.file_download_status, task.remote_path] for task in tasks if isinstance(task, FileDownloadTask)]
+            headers = ["id", "status", "details", "remote_path"]
+            await self.print(tabulate(table, headers, tablefmt="grid"))
 
     taskid_parser = cmd2.Cmd2ArgumentParser()
-    taskid_parser.add_argument("taskId", help="taskId")
+    taskid_parser.add_argument("task_id", help="task id")
     
     @cmd2.with_argparser(taskid_parser)
     @RunSync
@@ -332,7 +313,7 @@ class Console(cmd2.Cmd):
         """
         Stop a task
         """
-        await Client.StopTask(args.taskId)
+        await self.task_manager.StopTask(args.task_id)
 
     @cmd2.with_argparser(taskid_parser)
     @RunSync
@@ -340,27 +321,30 @@ class Console(cmd2.Cmd):
         """
         Resume a task
         """
-        await Client.ResumeTask(args.taskId)
+        await self.task_manager.ResumeTask(args.task_id)
+    
+    #endregion
 
+
+#region APP入口
 async def mainLoop():
-    global MainLoop, Client
+    global MainLoop
     MainLoop = asyncio.get_running_loop()
-    clientWorker = Client.Start()
+    app = App()
 
-    console = Console()
-    console.preloop()
+    app.preloop()
     try:
         stop = False
         while not stop:
-            line = await console.Input(console.prompt)
+            line = await app.input(app.prompt)
             try:
-                stop = console.onecmd_plus_hooks(line)
+                stop = app.onecmd_plus_hooks(line)
             except asyncio.CancelledError:
-                await console.Print("^C: Task cancelled")
+                await app.print("^C: Task cancelled")
     finally:
-        console.postloop()
-        clientWorker.cancel()
+        app.postloop()
 
 if __name__ == "__main__":  
     nest_asyncio.apply()
     asyncio.run(mainLoop())
+#endregion
