@@ -269,7 +269,14 @@ class PikPakFileSystem:
         father, son_name = await self._path_to_father_node_and_son_name(path)
         return await self._node_to_path(father), son_name
 
-    async def GetFileUrl(self, path : str) -> str:
+    async def GetFileUrlByNodeId(self, node_id : str) -> str:
+        node = await self._get_node_by_id(node_id)
+        if not isinstance(node, FileNode):
+            return None
+        await self._refresh(node)
+        return node.url
+
+    async def GetFileUrlByPath(self, path : str) -> str:
         node = await self._path_to_node(path)
         if not isinstance(node, FileNode):
             return None

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import shortuuid
 from PikPakFileSystem import PikPakFileSystem, FileNode, DirNode
+from aria2helper import Aria2Status, addUri, tellStatus, pause, unpause
 from pikpakapi import DownloadStatus
 import random
 import pickle
@@ -82,6 +83,8 @@ class FileDownloadTask(TaskBase):
         self.node_id : str = node_id
         self.remote_path : str = remote_path
         self.owner_id : str = owner_id
+        self.gid : str = None
+        self.url : str = None
     
 async def TaskWorker(task : TaskBase):
     try:
@@ -249,12 +252,39 @@ class TaskManager:
         await self._append_task(task)
         return task.id
     
+    async def _on_file_download_task_pending(self, task : FileDownloadTask):
+        task.url = await self.client.GetFileUrlByNodeId(task.node_id)
+        task.gid = await addUri(task.url, task.remote_path)
+        task.file_download_status = FileDownloadTaskStatus.DOWNLOADING
+
+    async def _on_file_download_task_downloading(self, task : FileDownloadTask):
+        wait_seconds = 3
+        while True:
+            status = await tellStatus(task.gid)
+            if status in {Aria2Status.REMOVED, Aria2Status.ERROR}:
+                self.file_download_status = FileDownloadTaskStatus.PENDING
+                raise Exception("failed to query status")
+            elif status == Aria2Status.PAUSED:
+                await unpause(task.gid)
+            elif status == Aria2Status.COMPLETE:
+                break
+            await asyncio.sleep(wait_seconds)
+        task.file_download_status = FileDownloadTaskStatus.DONE
+
     async def _file_download_task_handler(self, task : FileDownloadTask):
-        if random.randint(1, 5) == 2:
-            raise asyncio.CancelledError()
-        if random.randint(1, 5) == 3:
-            raise Exception("random error")
-        pass
+        try:
+            while True:
+                if task.file_download_status == FileDownloadTaskStatus.PENDING:
+                    await self._on_file_download_task_pending(task)
+                elif task.file_download_status == FileDownloadTaskStatus.DOWNLOADING:
+                    await self._on_file_download_task_downloading(task)
+                else:
+                    break
+        except asyncio.CancelledError:
+            gid = task.gid
+            if gid is not None:
+                await pause(gid)
+            raise
 
     #endregion
 
