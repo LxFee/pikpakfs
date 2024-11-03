@@ -199,6 +199,8 @@ class App(cmd2.Cmd):
         if await Client.IsDir(args.path):
             for child_name in await Client.GetChildrenNames(args.path, False):
                 await self.print(child_name)
+        else:
+            await self.print(await Client.GetFileUrl(args.path))
     
     @RunSync
     async def complete_cd(self, text, line, begidx, endidx):
