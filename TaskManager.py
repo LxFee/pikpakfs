@@ -262,7 +262,7 @@ class TaskManager:
         while True:
             status = await tellStatus(task.gid)
             if status in {Aria2Status.REMOVED, Aria2Status.ERROR}:
-                self.file_download_status = FileDownloadTaskStatus.PENDING
+                task.file_download_status = FileDownloadTaskStatus.PENDING
                 raise Exception("failed to query status")
             elif status == Aria2Status.PAUSED:
                 await unpause(task.gid)

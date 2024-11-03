@@ -306,8 +306,7 @@ class PikPakFileSystem:
             await self._remove_node(node)
     
     async def MakeDir(self, path : str) -> None:
-        father_path, son_name = await self._path_to_father_node_and_son_name(path)
-        father = await self._path_to_node(father_path)
+        father, son_name = await self._path_to_father_node_and_son_name(path)
         result = await self._pikpak_client.create_folder(son_name, father.id)
         id = result["file"]["id"]
         name = result["file"]["name"]
