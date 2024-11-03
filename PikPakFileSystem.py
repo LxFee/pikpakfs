@@ -221,12 +221,14 @@ class PikPakFileSystem:
         
         return father, sonName
 
-    async def _node_to_path(self, node : NodeBase) -> str:
-        if node is self._root:
+    async def _node_to_path(self, node : NodeBase, root : NodeBase = None) -> str:
+        if root is None:
+            root = self._root
+        if node is root:
             return "/"
         spots : list[str] = []
         current = node
-        while current is not self._root:
+        while current is not root:
             spots.append(current.name)
             current = await self._get_father_node(current)
         spots.append("")
@@ -262,7 +264,7 @@ class PikPakFileSystem:
     async def IsDir(self, path : str) -> bool:
         node = await self._path_to_node(path)
         return isinstance(node, DirNode)
-
+    
     async def SplitPath(self, path : str) -> tuple[str, str]:
         father, son_name = await self._path_to_father_node_and_son_name(path)
         return await self._node_to_path(father), son_name
@@ -307,19 +309,21 @@ class PikPakFileSystem:
     async def GetCwd(self) -> str:
         return await self._node_to_path(self._cwd)
     
-    async def GetNodeIdByPath(self, path : str) -> str:
+    async def GetChildren(self, node : NodeBase) -> list[NodeBase]:
+        if not isinstance(node, DirNode):
+            return []
+        await self._refresh(node)
+        return [await self._get_node_by_id(child_id) for child_id in node.children_id]
+
+    async def PathToNode(self, path : str) -> NodeBase:
         node = await self._path_to_node(path)
         if node is None:
             return None
-        return node.id
+        return node
     
-    async def IfExists(self, path : str) -> bool:
-        return await self._path_to_node(path) is not None
+    async def NodeToPath(self, from_node : NodeBase, to_node : NodeBase) -> str:
+        return await self._node_to_path(to_node, from_node)
 
-    async def ToFullPath(self, path : str) -> str:
-        node = await self._path_to_node(path)
-        return await self._node_to_path(node)
-    
     async def RemoteDownload(self, torrent : str, remote_base_path : str) -> tuple[str, str]:
         node = await self._path_to_node(remote_base_path)
         info = await self._pikpak_client.offline_download(torrent, node.id)
@@ -328,25 +332,19 @@ class PikPakFileSystem:
     async def QueryTaskStatus(self, task_id : str, node_id : str) -> DownloadStatus:
         return await self._pikpak_client.get_task_status(task_id, node_id)
     
-    async def UpdateDirectory(self, path : str, son_id : str) -> str:
-        await self._path_to_node(path)
-        son_info = await self._pikpak_client.offline_file_info(son_id)
-        kind = son_info["kind"]
-        parent_id = son_info["parent_id"]
-        name = son_info["name"]
-        son : NodeBase = None
-        if kind.endswith("folder"):
-            son = DirNode(son_id, name, parent_id)    
-        else:
-            son = FileNode(son_id, name, parent_id)
-        await self._add_node(son)
-        return await self._node_to_path(son)
-
-    async def JoinPath(self, father : str, son : str) -> str:
-        father_node = await self._path_to_node(father)
-        son_node = await self._find_child_in_dir_by_name(father_node, son)
-        if son_node is None:
-            raise Exception("Son not found")
-        return await self._node_to_path(son_node)
+    async def UpdateNode(self, node_id : str) -> NodeBase:
+        node : NodeBase = await self._get_node_by_id(node_id)
+        if node is None:
+            info = await self._pikpak_client.offline_file_info(node_id)
+            kind = info["kind"]
+            parent_id = info["parent_id"]
+            name = info["name"]
+            if kind.endswith("folder"):
+                node = DirNode(node_id, name, parent_id)    
+            else:
+                node = FileNode(node_id, name, parent_id)
+            await self._add_node(node)
+        node.lastUpdate = None
+        return node
 
     #endregion

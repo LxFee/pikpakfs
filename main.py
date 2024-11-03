@@ -166,10 +166,10 @@ class App(cmd2.Cmd):
         await Client.Login(args.username, args.password)
         await self.print("Logged in successfully")
 
-    async def _path_completer(self, text, line, begidx, endidx, ignoreFiles):   
+    async def _path_completer(self, text, line, begidx, endidx, ignore_files):   
         father_path, son_name = await Client.SplitPath(text)
-        children_names = await Client.GetChildrenNames(father_path, ignoreFiles)
-        matches = []
+        children_names = await Client.GetChildrenNames(father_path, ignore_files)
+        matches : list[str] = []
         for child_name in children_names:
             if child_name.startswith(son_name):
                 self.display_matches.append(child_name)
@@ -177,8 +177,8 @@ class App(cmd2.Cmd):
                     matches.append(text + child_name)
                 elif text.endswith(son_name):
                     matches.append(text[:text.rfind(son_name)] + child_name)
-        if len(matches) == 1 and await Client.IsDir(father_path + matches[0]):
-            if matches[0] == son_name:
+        if len(matches) == 1 and await Client.IsDir(matches[0]):
+            if matches[0].endswith(son_name):
                 matches[0] += "/"
             self.allow_appended_space = False
             self.allow_closing_quote = False
@@ -278,7 +278,7 @@ class App(cmd2.Cmd):
         """
         Pull a file or directory
         """
-        task_id = await self.task_manager.PullRemote(await Client.ToFullPath(args.target))
+        task_id = await self.task_manager.PullRemote(args.target)
         await self.print(f"Task {task_id} created")
         
 

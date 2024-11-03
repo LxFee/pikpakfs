@@ -3,7 +3,7 @@ from typing import Awaitable, Callable, Dict
 import asyncio
 import logging
 import shortuuid
-from PikPakFileSystem import PikPakFileSystem
+from PikPakFileSystem import PikPakFileSystem, FileNode, DirNode
 from pikpakapi import DownloadStatus
 import random
 
@@ -49,11 +49,11 @@ class TorrentTask(TaskBase):
         super().__init__(self)
         self.torrent_status : TorrentTaskStatus = TorrentTaskStatus.PENDING
         self.torrent : str = torrent
-        self.remote_full_path : str = None
-        self.remote_base_path : str = None
         self.info : str = ""
+        self.name : str = ""
 
         # 和PikPak交互需要的信息
+        self.remote_base_path : str = None
         self.node_id : str = None
         self.task_id : str = None
 
@@ -62,9 +62,10 @@ class FileDownloadTask(TaskBase):
     TAG = "FileDownloadTask"
     MAX_CONCURRENT_NUMBER = 5
 
-    def __init__(self, remote_path : str, owner_id : str):
+    def __init__(self, node_id : str, remote_path : str, owner_id : str):
         super().__init__(self)
         self.file_download_status : FileDownloadTaskStatus = FileDownloadTaskStatus.PENDING
+        self.node_id : str = node_id
         self.remote_path : str = remote_path
         self.owner_id : str = owner_id
 
@@ -141,25 +142,28 @@ class TaskManager:
             await asyncio.sleep(wait_seconds)
             wait_seconds = wait_seconds * 1.5
         
-        task.remote_full_path = await self.client.UpdateDirectory(task.remote_base_path, task.node_id)
         task.torrent_status = TorrentTaskStatus.LOCAL_DOWNLOADING
 
     async def _on_torrent_local_downloading(self, task : TorrentTask):
-        path = task.remote_full_path
+        node = await self.client.UpdateNode(task.node_id)
+        task.name = node.name
+        task.node_id = node.id
         
-        if not await self.client.IsDir(path):
-            await self._init_file_download_task(path, task.id) 
-        else:
+        if isinstance(node, FileNode):
+            await self._init_file_download_task(task.node_id, task.name, task.id) 
+        elif isinstance(node, DirNode):
             # 使用广度优先遍历
-            queue : list[str] = [path]
+            queue : list[str] = [node]
             while len(queue) > 0:
-                current_path = queue.pop(0)
-                for child_name in await self.client.GetChildrenNames(current_path, False):
-                    child_path = await self.client.JoinPath(current_path, child_name)
-                    if await self.client.IsDir(child_path):
-                        queue.append(child_path)
-                    else:
-                        await self._init_file_download_task(child_path, task.id)
+                current = queue.pop(0)
+                for child in await self.client.GetChildren(current):
+                    if isinstance(child, DirNode):
+                        queue.append(child)
+                    if isinstance(child, FileNode):
+                        child_path = task.name + await self.client.NodeToPath(node, child)
+                        await self._init_file_download_task(child.id, child_path, task.id)
+        else:
+            raise Exception("unknown node type")
         
         # 开始等待下载任务完成
         while True:
@@ -214,22 +218,21 @@ class TaskManager:
 
 
     #region 文件下载部分
-    async def _init_file_download_task(self, remote_path : str, owner_id : str) -> str:
+    async def _init_file_download_task(self, node_id : str, remote_path : str, owner_id : str) -> str:
         queue = await self._get_file_download_queue(owner_id)
         for task in queue:
             if not isinstance(task, FileDownloadTask):
                 continue
-            if task.remote_path == remote_path:
+            if task.node_id == node_id:
                 if task.status in {TaskStatus.PAUSED, TaskStatus.ERROR}:
                     task.status = TaskStatus.PENDING
                 return task.id
-        task = FileDownloadTask(remote_path, owner_id)
+        task = FileDownloadTask(node_id, remote_path, owner_id)
         task.handler = self._file_download_task_handler
         await self._append_task(task)
         return task.id
     
     async def _file_download_task_handler(self, task : FileDownloadTask):
-        await asyncio.sleep(30)
         if random.randint(1, 5) == 2:
             raise asyncio.CancelledError()
         if random.randint(1, 5) == 3:
@@ -260,17 +263,19 @@ class TaskManager:
         await self._append_task(task)
         return task.id
 
-    async def PullRemote(self, remote_full_path : str) -> str:
-        if not await self.client.IfExists(remote_full_path):
+    async def PullRemote(self, path : str) -> str:
+        target = await self.client.PathToNode(path)
+        if target is None:
             raise Exception("target not found")
-        queue = await self._get_torrent_queue()
+        queue = await self._get_torrent_queue() 
         for task in queue:
             if not isinstance(task, TorrentTask):
                 continue
-            if task.remote_full_path == remote_full_path:
+            if task.node_id == target.id:
                 return task.id
         task = TorrentTask(None)
-        task.remote_full_path = remote_full_path
+        task.name = target.name
+        task.node_id = target.id
         task.handler = self._torrent_task_handler
         task.torrent_status = TorrentTaskStatus.LOCAL_DOWNLOADING
         await self._append_task(task)
